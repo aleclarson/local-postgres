@@ -1,13 +1,16 @@
 # local-postgres
 
 A lightweight Node.js utility for managing a local development PostgreSQL
-process using the Postgres binaries already installed on your machine.
+process using Postgres binaries already installed on your machine, with an
+opt-in managed binary fallback.
 
-It starts a real TCP Postgres server from JavaScript without Docker, without
-bundling Postgres binaries, and without requiring a framework. It is intended
-for local development and scripting: local CLIs, examples, tests, migrations,
-demos, and development tools that need a temporary or per-project Postgres
-server.
+It starts a real TCP Postgres server from JavaScript without Docker and without
+requiring a framework. By default, it uses local Postgres binaries on `PATH`.
+When configured, it can download cached `@embedded-postgres/*` npm binary
+packages if local Postgres is missing or does not match the requested version.
+It is intended for local development and scripting: local CLIs, examples, tests,
+migrations, demos, and development tools that need a temporary or per-project
+Postgres server.
 
 It is not intended for production.
 
@@ -19,18 +22,24 @@ pnpm add local-postgres
 
 ## Requirements
 
-`local-postgres` shells out to local Postgres tools. These binaries must be on
-`PATH`:
+Node.js 18 or newer is required.
+
+By default, `local-postgres` shells out to local Postgres tools. These binaries
+must be on `PATH`:
 
 - `initdb`
 - `postgres`
-- `createdb`
-- `pg_isready`
-- `psql` when using `superuser`
 
 Install Postgres with your platform package manager, such as Homebrew,
 Postgres.app, apt, yum, or the official PostgreSQL installers. This package does
-not download or bundle Postgres.
+not download anything unless `postgres.strategy` allows managed downloads.
+
+Managed downloads use the platform packages already published under
+`@embedded-postgres/*` on npm. Downloaded packages are cached in
+`path.join(os.homedir(), ".local-postgres")` by default, and tarballs are
+verified against npm integrity metadata before extraction.
+
+Set `LOCAL_POSTGRES_SKIP_DOWNLOAD=1` to prevent managed downloads.
 
 ## Usage
 
@@ -67,11 +76,27 @@ const postgres = await startPostgres({
 })
 ```
 
+To require a Postgres major version and download a managed package when local
+binaries are missing or incompatible:
+
+```ts
+const postgres = await startPostgres({
+  dataDir: '.postgres',
+  database: 'example_dev',
+  postgres: {
+    version: '18',
+    strategy: 'prefer-local',
+  },
+})
+```
+
 ## What It Does
 
 - Creates the data directory when needed.
 - Runs `initdb` when the data directory does not contain a Postgres cluster.
 - Starts a real local TCP Postgres server on `127.0.0.1` by default.
+- Optionally verifies local Postgres versions and downloads managed server
+  binaries when configured.
 - Uses a requested port or picks an available port.
 - Creates the requested database when it does not already exist.
 - Optionally creates or updates a superuser role.
@@ -106,10 +131,35 @@ Common options:
 - `superuser`: `{ name, password }` role to create or update and expose through
   returned connection details.
 - `log`: `'ignore'`, `'inherit'`, or `{ filePath }` for Postgres stdout/stderr.
+- `postgres`: binary resolution options. Omit for local-only behavior.
 - `logger`: optional `{ info, warn, error }` lifecycle logger.
-- `readinessTimeoutMs`: maximum wait for `pg_isready`. Defaults to `3000`.
+- `readinessTimeoutMs`: maximum wait for Postgres to accept client connections.
+  Defaults to `3000`.
 - `readinessIntervalMs`: delay between readiness checks. Defaults to `100`.
 - `stopTimeoutMs`: shutdown wait after each signal. Defaults to `5000`.
+
+### `postgres` Options
+
+```ts
+await startPostgres({
+  dataDir: '.postgres',
+  postgres: {
+    cacheDir: '/tmp/local-postgres-cache',
+    strategy: 'prefer-local',
+    version: '18',
+  },
+})
+```
+
+- `version`: required Postgres version. A major version such as `18` accepts any
+  matching major version. More specific values require matching components.
+- `strategy`: one of `'local-only'`, `'prefer-local'`, `'prefer-download'`, or
+  `'download-only'`. Defaults to `'prefer-local'` when `postgres` is provided.
+- `cacheDir`: managed binary cache directory. Defaults to
+  `path.join(os.homedir(), ".local-postgres")`.
+
+When `postgres` is omitted, the strategy is effectively `'local-only'` and no
+version check or download is attempted.
 
 The returned server object includes:
 

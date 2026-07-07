@@ -10,3 +10,7 @@ export class LocalPostgresError extends Error {
 // #region Functions
 export async function startPostgres(_) {}
 // #endregion
+
+// #region Variables
+export var DEFAULT_POSTGRES_CACHE_DIR /* const */
+// #endregion

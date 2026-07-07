@@ -1,4 +1,8 @@
+import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 type ExecFileResult = {
@@ -10,6 +14,16 @@ type ExecFileResult = {
 type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void
 
 type ExecFileHandler = (command: string, args: string[]) => ExecFileResult
+
+type QueryResult = {
+  rowCount: number
+  rows?: unknown[]
+}
+
+type QueryHandler = (
+  sql: string,
+  values: unknown[] | undefined,
+) => QueryResult | Promise<QueryResult>
 
 class FakeChildProcess extends EventEmitter {
   pid = 12_345
@@ -64,29 +78,39 @@ class FakeNetServer extends EventEmitter {
   }
 }
 
+const tempDirs: string[] = []
+
+async function tempPath() {
+  const path = await mkdtemp(join(tmpdir(), 'local-postgres-test-'))
+  tempDirs.push(path)
+  return path
+}
+
 async function loadSubject({
-  existingPaths = [],
-  execFile = () => ({}),
+  execFile = defaultExecFile,
+  fetch,
+  homeDir = '/Users/tester',
   pickedPort = 55_432,
+  pgQuery = defaultQuery,
+  platform = 'darwin',
+  arch = 'arm64',
   listenError,
 }: {
-  existingPaths?: string[]
   execFile?: ExecFileHandler
+  fetch?: (url: string) => Response | Promise<Response>
+  homeDir?: string
   pickedPort?: number
+  pgQuery?: QueryHandler
+  platform?: NodeJS.Platform
+  arch?: string
   listenError?: Error
 } = {}) {
   vi.resetModules()
 
-  const existing = new Set(existingPaths)
   const child = new FakeChildProcess()
   const netServers: FakeNetServer[] = []
+  const pgQueries: Array<{ sql: string; values?: unknown[] }> = []
 
-  const existsSync = vi.fn((path: string) => existing.has(path))
-  const mkdirSync = vi.fn((path: string) => {
-    existing.add(path)
-  })
-  const openSync = vi.fn(() => 99)
-  const closeSync = vi.fn()
   const execFileMock = vi.fn(
     (command: string, args: string[], _options: unknown, callback: ExecFileCallback) => {
       const result = execFile(command, args)
@@ -99,49 +123,84 @@ async function loadSubject({
     netServers.push(server)
     return server
   })
+  const extractTarMock = vi.fn(async ({ cwd }: { cwd: string }) => {
+    const binDir = join(cwd, 'native', 'bin')
+    await mkdir(binDir, { recursive: true })
+    await writeFile(join(binDir, 'initdb'), '')
+    await writeFile(join(binDir, 'postgres'), '')
+  })
+  const fetchMock = vi.fn(async (url: string) => {
+    if (!fetch) {
+      throw new Error(`Unexpected fetch: ${url}`)
+    }
+    return fetch(url)
+  })
+
+  class FakePgClient {
+    async connect() {}
+
+    async query(sql: string, values?: unknown[]) {
+      pgQueries.push({ sql, values })
+      return pgQuery(sql, values)
+    }
+
+    async end() {}
+  }
 
   vi.doMock('node:child_process', () => ({
     execFile: execFileMock,
     spawn: spawnMock,
   }))
-  vi.doMock('node:fs', () => ({
-    closeSync,
-    existsSync,
-    mkdirSync,
-    openSync,
-  }))
   vi.doMock('node:net', () => ({
     createServer: createServerMock,
   }))
+  vi.doMock('node:os', () => ({
+    arch: () => arch,
+    homedir: () => homeDir,
+    platform: () => platform,
+    userInfo: () => ({ username: 'test_user' }),
+  }))
+  vi.doMock('pg', () => ({
+    Client: FakePgClient,
+  }))
+  vi.doMock('tar', () => ({
+    x: extractTarMock,
+  }))
+  vi.stubGlobal('fetch', fetchMock)
 
   const subject = await import('../src/index')
 
   return {
     child,
-    closeSync,
-    createServerMock,
     execFileMock,
-    mkdirSync,
+    extractTarMock,
+    fetchMock,
     netServers,
-    openSync,
+    pgQueries,
     spawnMock,
     startPostgres: subject.startPostgres,
+    DEFAULT_POSTGRES_CACHE_DIR: subject.DEFAULT_POSTGRES_CACHE_DIR,
   }
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.doUnmock('node:child_process')
-  vi.doUnmock('node:fs')
   vi.doUnmock('node:net')
+  vi.doUnmock('node:os')
+  vi.doUnmock('pg')
+  vi.doUnmock('tar')
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
   vi.resetModules()
+
+  await Promise.all(tempDirs.splice(0).map((path) => rm(path, { force: true, recursive: true })))
 })
 
-test('initializes a cluster, starts postgres, and returns connection details', async () => {
-  const dataDir = '/tmp/local-postgres-test'
-  const logFile = '/tmp/local-postgres-test/postgres.log'
-  const { child, closeSync, execFileMock, mkdirSync, openSync, spawnMock, startPostgres } =
-    await loadSubject()
+test('initializes a cluster, starts local postgres, and returns connection details', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  const logFile = join(root, 'postgres.log')
+  const { child, execFileMock, pgQueries, spawnMock, startPostgres } = await loadSubject()
 
   const server = await startPostgres({
     dataDir,
@@ -157,24 +216,25 @@ test('initializes a cluster, starts postgres, and returns connection details', a
     stopTimeoutMs: 1,
   })
 
-  expect(mkdirSync).toHaveBeenCalledWith(dataDir, { recursive: true })
-  expect(mkdirSync).toHaveBeenCalledWith('/tmp/local-postgres-test', {
-    recursive: true,
-  })
-  expect(openSync).toHaveBeenCalledWith(logFile, 'w')
+  expect(execFileMock).toHaveBeenCalledWith(
+    'initdb',
+    ['-D', dataDir, '-U', 'test_user', '--auth=trust', '--no-locale', '-E', 'UTF8'],
+    expect.anything(),
+    expect.anything(),
+  )
   expect(spawnMock).toHaveBeenCalledWith(
     'postgres',
     ['-D', dataDir, '-h', '127.0.0.1', '-p', '54321'],
-    {
-      stdio: ['ignore', 99, 99],
-    },
+    expect.objectContaining({
+      stdio: ['ignore', expect.any(Number), expect.any(Number)],
+    }),
   )
-
-  expect(execFileMock.mock.calls.map(([command]) => command)).toEqual([
-    'initdb',
-    'pg_isready',
-    'psql',
-    'createdb',
+  expect(pgQueries.map((query) => query.sql)).toEqual([
+    'SELECT 1',
+    'SELECT 1 FROM pg_roles WHERE rolname = $1',
+    'CREATE ROLE "app" WITH LOGIN SUPERUSER PASSWORD \'secret\'',
+    'SELECT 1 FROM pg_database WHERE datname = $1',
+    'CREATE DATABASE "app_test"',
   ])
   expect(server).toMatchObject({
     dataDir,
@@ -199,13 +259,15 @@ test('initializes a cluster, starts postgres, and returns connection details', a
   await server.stop()
 
   expect(child.signals).toEqual(['SIGINT'])
-  expect(closeSync).toHaveBeenCalledWith(99)
 })
 
 test('picks an available port when no port is provided', async () => {
-  const dataDir = '/tmp/local-postgres-existing'
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
   const { netServers, spawnMock, startPostgres } = await loadSubject({
-    existingPaths: [dataDir, join(dataDir, 'PG_VERSION')],
     pickedPort: 56_789,
   })
 
@@ -223,17 +285,17 @@ test('picks an available port when no port is provided', async () => {
 })
 
 test('reuses an initialized cluster and existing database', async () => {
-  const dataDir = '/tmp/local-postgres-existing'
-  const { execFileMock, startPostgres } = await loadSubject({
-    existingPaths: [dataDir, join(dataDir, 'PG_VERSION')],
-    execFile: (command) => {
-      if (command === 'createdb') {
-        return {
-          error: new Error('createdb failed'),
-          stderr: 'createdb: error: database "app" already exists',
-        }
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
+  const { execFileMock, pgQueries, startPostgres } = await loadSubject({
+    pgQuery: (sql) => {
+      if (sql === 'SELECT 1 FROM pg_database WHERE datname = $1') {
+        return { rowCount: 1 }
       }
-      return {}
+      return defaultQuery(sql)
     },
   })
 
@@ -244,7 +306,11 @@ test('reuses an initialized cluster and existing database', async () => {
     stopTimeoutMs: 1,
   })
 
-  expect(execFileMock.mock.calls.map(([command]) => command)).toEqual(['pg_isready', 'createdb'])
+  expect(execFileMock).not.toHaveBeenCalled()
+  expect(pgQueries.map((query) => query.sql)).toEqual([
+    'SELECT 1',
+    'SELECT 1 FROM pg_database WHERE datname = $1',
+  ])
 
   await server.stop()
 })
@@ -259,7 +325,7 @@ test('rejects before spawning when the requested port is unavailable', async () 
 
   await expect(
     startPostgres({
-      dataDir: '/tmp/local-postgres-test',
+      dataDir: join(await tempPath(), 'data'),
       port: 54_321,
     }),
   ).rejects.toThrow('Port 54321 is not available on 127.0.0.1')
@@ -267,3 +333,157 @@ test('rejects before spawning when the requested port is unavailable', async () 
   expect(execFileMock).not.toHaveBeenCalled()
   expect(spawnMock).not.toHaveBeenCalled()
 })
+
+test('uses local binaries when they satisfy the requested version', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
+  const { execFileMock, fetchMock, spawnMock, startPostgres } = await loadSubject()
+
+  const server = await startPostgres({
+    dataDir,
+    database: 'app',
+    port: 54_321,
+    postgres: {
+      version: '18',
+    },
+    stopTimeoutMs: 1,
+  })
+
+  expect(execFileMock.mock.calls.map(([command, args]) => [command, args])).toEqual([
+    ['postgres', ['--version']],
+  ])
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(spawnMock.mock.calls[0]?.[0]).toBe('postgres')
+
+  await server.stop()
+})
+
+test('rejects an initialized data directory from another Postgres major version', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '15')
+
+  const { spawnMock, startPostgres } = await loadSubject()
+
+  await expect(
+    startPostgres({
+      dataDir,
+      database: 'app',
+      port: 54_321,
+      postgres: {
+        version: '18',
+      },
+      stopTimeoutMs: 1,
+    }),
+  ).rejects.toThrow('data directory was initialized with version 15')
+
+  expect(spawnMock).not.toHaveBeenCalled()
+})
+
+test('downloads embedded postgres when local binaries are the wrong version', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  const cacheDir = join(root, 'cache')
+  const tarball = Buffer.from('fake embedded postgres package')
+  const integrity = `sha512-${createHash('sha512').update(tarball).digest('base64')}`
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
+  const {
+    DEFAULT_POSTGRES_CACHE_DIR,
+    execFileMock,
+    extractTarMock,
+    fetchMock,
+    spawnMock,
+    startPostgres,
+  } = await loadSubject({
+    execFile: (command, args) => {
+      if (command === 'postgres' && args[0] === '--version') {
+        return { stdout: 'postgres (PostgreSQL) 15.0' }
+      }
+      return defaultExecFile(command, args)
+    },
+    fetch: async (url) => {
+      if (url === 'https://registry.npmjs.org/@embedded-postgres%2fdarwin-arm64') {
+        return Response.json({
+          'dist-tags': {
+            latest: '18.4.0-beta.17',
+          },
+          versions: {
+            '18.4.0-beta.17': {
+              dist: {
+                integrity,
+                tarball: 'https://registry.npmjs.org/fake.tgz',
+              },
+            },
+          },
+        })
+      }
+
+      if (url === 'https://registry.npmjs.org/fake.tgz') {
+        return new Response(tarball)
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`)
+    },
+    homeDir: root,
+  })
+
+  expect(DEFAULT_POSTGRES_CACHE_DIR).toBe(join(root, '.local-postgres'))
+
+  const server = await startPostgres({
+    dataDir,
+    database: 'app',
+    port: 54_321,
+    postgres: {
+      cacheDir,
+      version: '18',
+    },
+    stopTimeoutMs: 1,
+  })
+
+  const packageDir = join(cacheDir, 'embedded-postgres', 'darwin-arm64', '18.4.0-beta.17')
+  expect(execFileMock.mock.calls.map(([command, args]) => [command, args])).toEqual([
+    ['postgres', ['--version']],
+  ])
+  expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+    'https://registry.npmjs.org/@embedded-postgres%2fdarwin-arm64',
+    'https://registry.npmjs.org/fake.tgz',
+  ])
+  expect(extractTarMock).toHaveBeenCalledTimes(1)
+  expect(existsSync(join(packageDir, '.local-postgres-installed'))).toBe(true)
+  expect(spawnMock.mock.calls[0]?.[0]).toBe(join(packageDir, 'native', 'bin', 'postgres'))
+
+  await server.stop()
+})
+
+function defaultExecFile(command: string, args: string[]): ExecFileResult {
+  if (args[0] === '--version' && command.includes('postgres')) {
+    return { stdout: 'postgres (PostgreSQL) 18.4' }
+  }
+
+  if (args[0] === '--version' && command.includes('initdb')) {
+    return { stdout: 'initdb (PostgreSQL) 18.4' }
+  }
+
+  return {}
+}
+
+function defaultQuery(sql: string): QueryResult {
+  if (sql === 'SELECT 1') {
+    return { rowCount: 1, rows: [{}] }
+  }
+
+  if (
+    sql === 'SELECT 1 FROM pg_roles WHERE rolname = $1' ||
+    sql === 'SELECT 1 FROM pg_database WHERE datname = $1'
+  ) {
+    return { rowCount: 0, rows: [] }
+  }
+
+  return { rowCount: 0, rows: [] }
+}

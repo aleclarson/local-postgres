@@ -32,6 +32,11 @@ export interface LocalPostgresSuperuser {
   name: string;
   password: string;
 }
+export interface PostgresBinaryOptions {
+  version?: string;
+  strategy?: PostgresBinaryStrategy;
+  cacheDir?: string;
+}
 export interface StartPostgresOptions {
   dataDir: string;
   database?: string;
@@ -39,6 +44,7 @@ export interface StartPostgresOptions {
   host?: string;
   superuser?: LocalPostgresSuperuser;
   log?: LocalPostgresLogTarget;
+  postgres?: PostgresBinaryOptions;
   logger?: Partial<LocalPostgresLogger>;
   readinessTimeoutMs?: number;
   readinessIntervalMs?: number;
@@ -50,6 +56,7 @@ export interface StartPostgresOptions {
 export type LocalPostgresLogTarget = 'ignore' | 'inherit' | {
   filePath: string;
 };
+export type PostgresBinaryStrategy = 'local-only' | 'prefer-local' | 'prefer-download' | 'download-only';
 // #endregion
 
 // #region Classes
@@ -60,4 +67,8 @@ export declare class LocalPostgresError extends Error {
 
 // #region Functions
 export declare function startPostgres(_: StartPostgresOptions): Promise<LocalPostgresServer>;
+// #endregion
+
+// #region Variables
+export declare const DEFAULT_POSTGRES_CACHE_DIR: string;
 // #endregion
