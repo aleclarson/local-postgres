@@ -17,7 +17,6 @@ import {
 } from './types'
 
 const DEFAULT_REGISTRY_URL = 'https://registry.npmjs.org'
-const EMBEDDED_POSTGRES_SCOPE = '@embedded-postgres'
 
 export interface ResolvedPostgresBinaries {
   initdb: string
@@ -26,7 +25,7 @@ export interface ResolvedPostgresBinaries {
   version?: string
 }
 
-interface EmbeddedPostgresPackageMetadata {
+interface NpmPackageMetadata {
   'dist-tags'?: {
     latest?: string
   }
@@ -182,9 +181,13 @@ async function resolveDownloadedPostgresBinaries(
     )
   }
 
-  const packageName = embeddedPostgresPackageName()
-  const metadata = await fetchEmbeddedPostgresPackageMetadata(packageName)
-  const packageVersion = selectEmbeddedPostgresPackageVersion(metadata, options?.version)
+  const packageName = packageNameForPlatform('@embedded-postgres', os.platform(), os.arch())
+  const metadata = await fetchNpmPackageMetadata(packageName)
+  const packageVersion = selectPackageVersion(
+    metadata,
+    options?.version,
+    'embedded Postgres package',
+  )
   const packageInfo = metadata.versions[packageVersion]
   const tarball = packageInfo?.dist?.tarball
   const integrity = packageInfo?.dist?.integrity
@@ -199,7 +202,7 @@ async function resolveDownloadedPostgresBinaries(
   const packageDir = path.join(
     cacheDir,
     'embedded-postgres',
-    packageName.replace(`${EMBEDDED_POSTGRES_SCOPE}/`, ''),
+    packageName.split('/').at(-1) ?? packageName,
     packageVersion,
   )
   const markerPath = path.join(packageDir, '.local-postgres-installed')
@@ -227,31 +230,26 @@ async function resolveDownloadedPostgresBinaries(
   return binaries
 }
 
-function embeddedPostgresPackageName() {
-  const platform = os.platform()
-  const arch = os.arch()
-
+function packageNameForPlatform(scope: string, platform: NodeJS.Platform, arch: string) {
   if (platform === 'darwin' && (arch === 'arm64' || arch === 'x64')) {
-    return `${EMBEDDED_POSTGRES_SCOPE}/darwin-${arch}`
+    return `${scope}/darwin-${arch}`
   }
 
   if (
     platform === 'linux' &&
     (arch === 'arm' || arch === 'arm64' || arch === 'ia32' || arch === 'ppc64' || arch === 'x64')
   ) {
-    return `${EMBEDDED_POSTGRES_SCOPE}/linux-${arch}`
+    return `${scope}/linux-${arch}`
   }
 
   if (platform === 'win32' && arch === 'x64') {
-    return `${EMBEDDED_POSTGRES_SCOPE}/windows-x64`
+    return `${scope}/windows-x64`
   }
 
-  throw new LocalPostgresError(
-    `No ${EMBEDDED_POSTGRES_SCOPE} package is known for ${platform}/${arch}.`,
-  )
+  throw new LocalPostgresError(`No ${scope} package is known for ${platform}/${arch}.`)
 }
 
-async function fetchEmbeddedPostgresPackageMetadata(packageName: string) {
+async function fetchNpmPackageMetadata(packageName: string) {
   const metadataUrl = `${DEFAULT_REGISTRY_URL}/${packageName.replace('/', '%2f')}`
   const response = await fetch(metadataUrl, {
     headers: {
@@ -265,17 +263,18 @@ async function fetchEmbeddedPostgresPackageMetadata(packageName: string) {
     )
   }
 
-  return (await response.json()) as EmbeddedPostgresPackageMetadata
+  return (await response.json()) as NpmPackageMetadata
 }
 
-function selectEmbeddedPostgresPackageVersion(
-  metadata: EmbeddedPostgresPackageMetadata,
+function selectPackageVersion(
+  metadata: NpmPackageMetadata,
   requestedVersion: string | undefined,
+  packageLabel: string,
 ) {
   if (!requestedVersion) {
     const latest = metadata['dist-tags']?.latest
     if (!latest) {
-      throw new LocalPostgresError('The embedded Postgres package has no latest dist-tag.')
+      throw new LocalPostgresError(`The ${packageLabel} has no latest dist-tag.`)
     }
     return latest
   }
@@ -291,7 +290,7 @@ function selectEmbeddedPostgresPackageVersion(
 
   if (!matchedVersion) {
     throw new LocalPostgresError(
-      `No embedded Postgres package version satisfies requested version ${requestedVersion}.`,
+      `No ${packageLabel} version satisfies requested version ${requestedVersion}.`,
     )
   }
 
