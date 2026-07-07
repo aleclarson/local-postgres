@@ -406,6 +406,8 @@ test('downloads embedded postgres when local binaries are the wrong version', as
   const dataDir = join(root, 'data')
   const cacheDir = join(root, 'cache')
   const tarball = Buffer.from('fake embedded postgres package')
+  const tarballResponse = new Response(tarball)
+  const arrayBufferMock = vi.spyOn(tarballResponse, 'arrayBuffer')
   const integrity = `sha512-${createHash('sha512').update(tarball).digest('base64')}`
   await mkdir(dataDir, { recursive: true })
   await writeFile(join(dataDir, 'PG_VERSION'), '18')
@@ -442,7 +444,7 @@ test('downloads embedded postgres when local binaries are the wrong version', as
       }
 
       if (url === 'https://registry.npmjs.org/fake.tgz') {
-        return new Response(tarball)
+        return tarballResponse
       }
 
       throw new Error(`Unexpected fetch: ${url}`)
@@ -471,11 +473,71 @@ test('downloads embedded postgres when local binaries are the wrong version', as
     'https://registry.npmjs.org/@embedded-postgres%2fdarwin-arm64',
     'https://registry.npmjs.org/fake.tgz',
   ])
+  expect(arrayBufferMock).not.toHaveBeenCalled()
   expect(unpackTarMock).toHaveBeenCalledWith(expect.any(String), { strip: 1 })
   expect(existsSync(join(packageDir, '.local-postgres-installed'))).toBe(true)
   expect(spawnMock.mock.calls[0]?.[0]).toBe(join(packageDir, 'native', 'bin', 'postgres'))
 
   await server.stop()
+})
+
+test('rejects managed downloads before extraction when integrity verification fails', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  const cacheDir = join(root, 'cache')
+  const tarball = Buffer.from('fake embedded postgres package')
+  const integrity = `sha512-${createHash('sha512').update('different tarball').digest('base64')}`
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
+  const { spawnMock, startPostgres, unpackTarMock } = await loadSubject({
+    execFile: (command, args) => {
+      if (command === 'postgres' && args[0] === '--version') {
+        return { stdout: 'postgres (PostgreSQL) 15.0' }
+      }
+      return defaultExecFile(command, args)
+    },
+    fetch: async (url) => {
+      if (url === 'https://registry.npmjs.org/@embedded-postgres%2fdarwin-arm64') {
+        return Response.json({
+          'dist-tags': {
+            latest: '18.4.0-beta.17',
+          },
+          versions: {
+            '18.4.0-beta.17': {
+              dist: {
+                integrity,
+                tarball: 'https://registry.npmjs.org/fake.tgz',
+              },
+            },
+          },
+        })
+      }
+
+      if (url === 'https://registry.npmjs.org/fake.tgz') {
+        return new Response(tarball)
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`)
+    },
+    homeDir: root,
+  })
+
+  await expect(
+    startPostgres({
+      dataDir,
+      database: 'app',
+      port: 54_321,
+      postgres: {
+        cacheDir,
+        version: '18',
+      },
+      stopTimeoutMs: 1,
+    }),
+  ).rejects.toThrow('Integrity check failed for @embedded-postgres/darwin-arm64@18.4.0-beta.17')
+
+  expect(unpackTarMock).not.toHaveBeenCalled()
+  expect(spawnMock).not.toHaveBeenCalled()
 })
 
 function defaultExecFile(command: string, args: string[]): ExecFileResult {

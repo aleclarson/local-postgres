@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { Readable } from 'node:stream'
+import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGunzip } from 'node:zlib'
 import { unpackTar } from 'modern-tar/fs'
@@ -329,15 +329,24 @@ async function installEmbeddedPostgresPackage({
     )
   }
 
-  const tarballBuffer = Buffer.from(await response.arrayBuffer())
-  verifyNpmIntegrity(tarballBuffer, integrity, `${packageName}@${packageVersion}`)
+  if (!response.body) {
+    throw new LocalPostgresError(`Failed to download ${packageName}@${packageVersion}: empty body.`)
+  }
 
   const packageParentDir = path.dirname(packageDir)
   await mkdir(packageParentDir, { recursive: true })
   const tempDir = await mkdtemp(path.join(packageParentDir, '.tmp-'))
+  // Keep the archive outside the extraction directory so tar entries cannot
+  // collide with it before the verified package directory is renamed into place.
+  const tarballPath = `${tempDir}.tgz`
 
   try {
-    await pipeline(Readable.from(tarballBuffer), createGunzip(), unpackTar(tempDir, { strip: 1 }))
+    const verifier = createNpmIntegrityVerifier(integrity, `${packageName}@${packageVersion}`)
+    await pipeline(Readable.fromWeb(response.body), verifier.stream, createWriteStream(tarballPath))
+    verifier.verify()
+
+    await pipeline(createReadStream(tarballPath), createGunzip(), unpackTar(tempDir, { strip: 1 }))
+    await rm(tarballPath, { force: true })
     await writeFile(
       path.join(tempDir, '.local-postgres-installed'),
       JSON.stringify(
@@ -353,20 +362,35 @@ async function installEmbeddedPostgresPackage({
     await rm(packageDir, { force: true, recursive: true })
     await rename(tempDir, packageDir)
   } catch (error) {
-    await rm(tempDir, { force: true, recursive: true })
+    await Promise.all([
+      rm(tempDir, { force: true, recursive: true }),
+      rm(tarballPath, { force: true }),
+    ])
     throw error
   }
 }
 
-function verifyNpmIntegrity(buffer: Buffer, integrity: string, label: string) {
+function createNpmIntegrityVerifier(integrity: string, label: string) {
   const [algorithm, expectedDigest] = integrity.split('-', 2)
   if (!algorithm || !expectedDigest) {
     throw new LocalPostgresError(`Unsupported npm integrity value for ${label}.`)
   }
 
-  const actualDigest = createHash(algorithm).update(buffer).digest('base64')
-  if (actualDigest !== expectedDigest) {
-    throw new LocalPostgresError(`Integrity check failed for ${label}.`)
+  const hash = createHash(algorithm)
+
+  return {
+    stream: new Transform({
+      transform(chunk, _encoding, callback) {
+        hash.update(chunk)
+        callback(null, chunk)
+      },
+    }),
+    verify() {
+      const actualDigest = hash.digest('base64')
+      if (actualDigest !== expectedDigest) {
+        throw new LocalPostgresError(`Integrity check failed for ${label}.`)
+      }
+    },
   }
 }
 
