@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough, Writable } from 'node:stream'
 
 type ExecFileResult = {
   error?: Error
@@ -123,11 +124,23 @@ async function loadSubject({
     netServers.push(server)
     return server
   })
-  const extractTarMock = vi.fn(async ({ cwd }: { cwd: string }) => {
-    const binDir = join(cwd, 'native', 'bin')
-    await mkdir(binDir, { recursive: true })
-    await writeFile(join(binDir, 'initdb'), '')
-    await writeFile(join(binDir, 'postgres'), '')
+  const unpackTarMock = vi.fn((directoryPath: string) => {
+    return new Writable({
+      write(_chunk, _encoding, callback) {
+        callback()
+      },
+      final(callback) {
+        void (async () => {
+          const binDir = join(directoryPath, 'native', 'bin')
+          await mkdir(binDir, { recursive: true })
+          await writeFile(join(binDir, 'initdb'), '')
+          await writeFile(join(binDir, 'postgres'), '')
+        })().then(
+          () => callback(),
+          (error: Error) => callback(error),
+        )
+      },
+    })
   })
   const fetchMock = vi.fn(async (url: string) => {
     if (!fetch) {
@@ -163,8 +176,11 @@ async function loadSubject({
   vi.doMock('pg', () => ({
     Client: FakePgClient,
   }))
-  vi.doMock('tar', () => ({
-    x: extractTarMock,
+  vi.doMock('modern-tar/fs', () => ({
+    unpackTar: unpackTarMock,
+  }))
+  vi.doMock('node:zlib', () => ({
+    createGunzip: () => new PassThrough(),
   }))
   vi.stubGlobal('fetch', fetchMock)
 
@@ -173,13 +189,13 @@ async function loadSubject({
   return {
     child,
     execFileMock,
-    extractTarMock,
     fetchMock,
     netServers,
     pgQueries,
     spawnMock,
     startPostgres: subject.startPostgres,
     DEFAULT_POSTGRES_CACHE_DIR: subject.DEFAULT_POSTGRES_CACHE_DIR,
+    unpackTarMock,
   }
 }
 
@@ -187,8 +203,9 @@ afterEach(async () => {
   vi.doUnmock('node:child_process')
   vi.doUnmock('node:net')
   vi.doUnmock('node:os')
+  vi.doUnmock('node:zlib')
+  vi.doUnmock('modern-tar/fs')
   vi.doUnmock('pg')
-  vi.doUnmock('tar')
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   vi.resetModules()
@@ -396,10 +413,10 @@ test('downloads embedded postgres when local binaries are the wrong version', as
   const {
     DEFAULT_POSTGRES_CACHE_DIR,
     execFileMock,
-    extractTarMock,
     fetchMock,
     spawnMock,
     startPostgres,
+    unpackTarMock,
   } = await loadSubject({
     execFile: (command, args) => {
       if (command === 'postgres' && args[0] === '--version') {
@@ -454,7 +471,7 @@ test('downloads embedded postgres when local binaries are the wrong version', as
     'https://registry.npmjs.org/@embedded-postgres%2fdarwin-arm64',
     'https://registry.npmjs.org/fake.tgz',
   ])
-  expect(extractTarMock).toHaveBeenCalledTimes(1)
+  expect(unpackTarMock).toHaveBeenCalledWith(expect.any(String), { strip: 1 })
   expect(existsSync(join(packageDir, '.local-postgres-installed'))).toBe(true)
   expect(spawnMock.mock.calls[0]?.[0]).toBe(join(packageDir, 'native', 'bin', 'postgres'))
 

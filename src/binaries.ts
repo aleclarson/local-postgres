@@ -3,7 +3,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { x as extractTar } from 'tar'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { createGunzip } from 'node:zlib'
+import { unpackTar } from 'modern-tar/fs'
 
 import { commandError, runCommand } from './process'
 import {
@@ -333,16 +336,9 @@ async function installEmbeddedPostgresPackage({
   const packageParentDir = path.dirname(packageDir)
   await mkdir(packageParentDir, { recursive: true })
   const tempDir = await mkdtemp(path.join(packageParentDir, '.tmp-'))
-  const tarballPath = path.join(tempDir, 'package.tgz')
 
   try {
-    await writeFile(tarballPath, tarballBuffer)
-    await extractTar({
-      cwd: tempDir,
-      file: tarballPath,
-      strip: 1,
-    })
-    await rm(tarballPath, { force: true })
+    await pipeline(Readable.from(tarballBuffer), createGunzip(), unpackTar(tempDir, { strip: 1 }))
     await writeFile(
       path.join(tempDir, '.local-postgres-installed'),
       JSON.stringify(
