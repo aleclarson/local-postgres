@@ -70,18 +70,19 @@ See [Postgres Binaries](../guides/postgres-binaries.md) for strategy behavior.
 
 `startPostgres` resolves with a `LocalPostgresServer`:
 
-| Field              | Type                  | Notes                                                  |
-| ------------------ | --------------------- | ------------------------------------------------------ |
-| `dataDir`          | `string`              | The data directory passed to `startPostgres`.          |
-| `database`         | `string`              | The database exposed to callers.                       |
-| `host`             | `string`              | The host used for the server and connection details.   |
-| `port`             | `number`              | The fixed or selected port.                            |
-| `user`             | `string \| undefined` | Present when `superuser` is set.                       |
-| `password`         | `string \| undefined` | Present when `superuser` is set.                       |
-| `pid`              | `number \| undefined` | Child process id from `spawn`.                         |
-| `connectionString` | `string`              | PostgreSQL URL with database and optional credentials. |
-| `env`              | `LocalPostgresEnv`    | Environment values for clients and child processes.    |
-| `stop()`           | `() => Promise<void>` | Stops the server process. Safe to call more than once. |
+| Field                     | Type                  | Notes                                                  |
+| ------------------------- | --------------------- | ------------------------------------------------------ |
+| `dataDir`                 | `string`              | The data directory passed to `startPostgres`.          |
+| `database`                | `string`              | The database exposed to callers.                       |
+| `host`                    | `string`              | The host used for the server and connection details.   |
+| `port`                    | `number`              | The fixed or selected port.                            |
+| `user`                    | `string \| undefined` | Present when `superuser` is set.                       |
+| `password`                | `string \| undefined` | Present when `superuser` is set.                       |
+| `pid`                     | `number \| undefined` | Child process id from `spawn`.                         |
+| `connectionString`        | `string`              | PostgreSQL URL with database and optional credentials. |
+| `env`                     | `LocalPostgresEnv`    | Environment values for clients and child processes.    |
+| `stop()`                  | `() => Promise<void>` | Stops the server process. Safe to call more than once. |
+| `[Symbol.asyncDispose]()` | `() => Promise<void>` | Supports `await using` by delegating to `stop()`.      |
 
 `connectionString` URL-encodes credentials and the database name. IPv6 hosts are
 wrapped in brackets when needed.

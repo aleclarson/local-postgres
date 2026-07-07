@@ -27,6 +27,7 @@ export interface LocalPostgresServer {
   connectionString: string;
   env: LocalPostgresEnv;
   stop(): Promise<void>;
+  [Symbol.asyncDispose](): Promise<void>;
 }
 export interface LocalPostgresSuperuser {
   name: string;

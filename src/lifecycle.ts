@@ -177,6 +177,7 @@ export async function startPostgres(options: StartPostgresOptions): Promise<Loca
     connectionString,
     env,
     stop,
+    [Symbol.asyncDispose]: stop,
   }
 }
 

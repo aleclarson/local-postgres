@@ -5,7 +5,8 @@
 
 `startPostgres` returns a `LocalPostgresServer`. Keep that object near the code
 that owns startup and teardown, and call `stop()` exactly when that owner is
-done.
+done. In runtimes that support explicit resource management, `await using`
+also stops the server when the scope exits.
 
 ## Local Development Scripts
 
@@ -34,6 +35,20 @@ try {
 } finally {
   await postgres.stop()
 }
+```
+
+With `await using`, teardown can be scoped without a `finally` block:
+
+```ts
+import { startPostgres } from 'local-postgres'
+
+await using postgres = await startPostgres({
+  dataDir: '.postgres',
+  database: 'app_dev',
+})
+
+Object.assign(process.env, postgres.env)
+await import('./dev-server.ts')
 ```
 
 This pattern keeps the data directory stable and lets the surrounding dev tool

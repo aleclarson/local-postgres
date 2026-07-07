@@ -278,6 +278,22 @@ test('initializes a cluster, starts local postgres, and returns connection detai
   expect(child.signals).toEqual(['SIGINT'])
 })
 
+test('supports explicit resource management with async disposal', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  const { child, startPostgres } = await loadSubject()
+
+  const server = await startPostgres({
+    dataDir,
+    port: 54_321,
+    stopTimeoutMs: 1,
+  })
+
+  await server[Symbol.asyncDispose]()
+
+  expect(child.signals).toEqual(['SIGINT'])
+})
+
 test('picks an available port when no port is provided', async () => {
   const root = await tempPath()
   const dataDir = join(root, 'data')
