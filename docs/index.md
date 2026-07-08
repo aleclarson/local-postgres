@@ -19,7 +19,7 @@ developer tooling. It is not a production process manager.
 | Install Postgres and start a first server              | [Getting Started](getting-started.md)              |
 | Reuse a server in tests, CLIs, or dev tools            | [Lifecycle Patterns](guides/lifecycle-patterns.md) |
 | Choose local binaries or managed downloads             | [Postgres Binaries](guides/postgres-binaries.md)   |
-| Look up every option and returned field                | [API Reference](reference/api.md)                  |
+| Look up every option and returned field                | Generated API docs from public TSDoc               |
 | Diagnose startup, port, version, and download failures | [Troubleshooting](troubleshooting.md)              |
 
 ## What It Manages

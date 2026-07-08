@@ -34,6 +34,12 @@ interface NpmPackageMetadata {
   >
 }
 
+/**
+ * Resolves the `postgres` and `initdb` binaries that lifecycle helpers would use.
+ *
+ * By default, this checks local binaries from `PATH`. Provide `options` to
+ * require a version or opt into managed package downloads.
+ */
 export async function resolvePostgresBinaries(
   options?: PostgresBinaryOptions,
 ): Promise<ResolvedPostgresBinaries> {

@@ -54,8 +54,15 @@ export type {
   WaitForPostgresReadyOptions,
 } from './types'
 
+/**
+ * Resolves a Postgres binary and returns its parsed version.
+ *
+ * Use this before initializing a data directory when the caller needs the
+ * binary version to choose a versioned cluster path.
+ */
 export async function getPostgresVersion(
   options: {
+    /** Binary resolution behavior. */
     postgres?: PostgresBinaryOptions
   } = {},
 ): Promise<string> {
@@ -72,6 +79,13 @@ export async function getPostgresVersion(
   return binaries.version
 }
 
+/**
+ * Creates and initializes a Postgres data directory when needed.
+ *
+ * If `PG_VERSION` already exists, this validates the data directory against
+ * the resolved binary major version when known and leaves existing
+ * configuration untouched.
+ */
 export async function initPostgresDataDir(
   options: InitPostgresDataDirOptions,
 ): Promise<InitPostgresDataDirResult> {
@@ -139,6 +153,12 @@ export async function initPostgresDataDir(
   }
 }
 
+/**
+ * Starts a Postgres server for an existing data directory.
+ *
+ * The returned process resolves only after Postgres accepts client
+ * connections. Call `stop()` or use `await using` to shut the process down.
+ */
 export async function startPostgresDataDir(
   options: StartPostgresDataDirOptions,
 ): Promise<LocalPostgresProcess> {
@@ -248,6 +268,13 @@ export async function startPostgresDataDir(
   }
 }
 
+/**
+ * Stops a Postgres data directory by reading its `postmaster.pid` file.
+ *
+ * This is useful for cleanup from a different process than the one that
+ * started Postgres. If no `postmaster.pid` exists, the function resolves
+ * without signaling anything.
+ */
 export async function stopPostgresDataDir(options: StopPostgresDataDirOptions): Promise<void> {
   const dataDir = requireNonEmptyString(options.dataDir, 'dataDir')
   const logger = resolveLogger(options.logger)
@@ -288,6 +315,9 @@ export async function stopPostgresDataDir(options: StopPostgresDataDirOptions): 
   }
 }
 
+/**
+ * Waits until Postgres accepts a client connection through the given listener.
+ */
 export async function waitForPostgresReady(options: WaitForPostgresReadyOptions): Promise<void> {
   await waitForReady({
     database: options.database,
@@ -301,6 +331,12 @@ export async function waitForPostgresReady(options: WaitForPostgresReadyOptions)
   })
 }
 
+/**
+ * Creates a database when it does not already exist.
+ *
+ * The database name is safely quoted before execution. The connection is made
+ * through `bootstrapDatabase`, or `postgres` when that option is omitted.
+ */
 export async function ensurePostgresDatabase(
   options: EnsurePostgresDatabaseOptions,
 ): Promise<void> {

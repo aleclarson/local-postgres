@@ -14,6 +14,13 @@ import {
 import { ensureSuperuser } from './postgres-client'
 import type { LocalPostgresLogger, LocalPostgresServer, StartPostgresOptions } from './types'
 
+/**
+ * Starts a local PostgreSQL server and returns connection details.
+ *
+ * The data directory is created and initialized when needed, the server is
+ * started, readiness is verified, optional superuser/database setup is applied,
+ * and the returned `stop()` function shuts the process down.
+ */
 export async function startPostgres(options: StartPostgresOptions): Promise<LocalPostgresServer> {
   const dataDir = requireNonEmptyString(options.dataDir, 'dataDir')
   const database = options.database

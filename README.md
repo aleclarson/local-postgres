@@ -45,7 +45,7 @@ values without mutating `process.env`.
 | Install Postgres and start a first server              | [Getting Started](docs/getting-started.md)              |
 | Reuse a server in tests, CLIs, or dev tools            | [Lifecycle Patterns](docs/guides/lifecycle-patterns.md) |
 | Choose local binaries or managed downloads             | [Postgres Binaries](docs/guides/postgres-binaries.md)   |
-| Look up every option and returned field                | [API Reference](docs/reference/api.md)                  |
+| Look up every option and returned field                | Generated API docs from public TSDoc                    |
 | Diagnose startup, port, version, and download failures | [Troubleshooting](docs/troubleshooting.md)              |
 
 ## Scope
