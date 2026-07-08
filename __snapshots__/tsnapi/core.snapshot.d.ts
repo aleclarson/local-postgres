@@ -49,9 +49,6 @@ export interface PostgresBinaryOptions {
 export interface ResolvedPostgresBinaries {
   initdb: string;
   postgres: string;
-  pgCtl?: string;
-  createdb?: string;
-  psql?: string;
   source: 'local' | 'download';
   version?: string;
 }
@@ -69,9 +66,7 @@ export interface StartPostgresDataDirOptions {
 }
 export interface StopPostgresDataDirOptions {
   dataDir: string;
-  binaries?: ResolvedPostgresBinaries;
   listen?: PostgresListenOptions;
-  postgres?: PostgresBinaryOptions;
   mode?: 'smart' | 'fast' | 'immediate';
   waitForIdle?: boolean | {
     database?: string;
@@ -80,7 +75,6 @@ export interface StopPostgresDataDirOptions {
     intervalMs?: number;
   };
   timeoutMs?: number;
-  log?: LocalPostgresLogTarget;
   logger?: Partial<LocalPostgresLogger>;
 }
 export interface WaitForPostgresReadyOptions {

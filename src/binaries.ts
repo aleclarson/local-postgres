@@ -128,11 +128,8 @@ async function resolveLocalPostgresBinaries({
   version?: string
 }): Promise<ResolvedPostgresBinaries> {
   const binaries: ResolvedPostgresBinaries = {
-    createdb: 'createdb',
     initdb: 'initdb',
-    pgCtl: 'pg_ctl',
     postgres: 'postgres',
-    psql: 'psql',
     source: 'local',
   }
 
@@ -311,11 +308,8 @@ function downloadedBinaryPaths(packageDir: string, version: string): ResolvedPos
   const binDir = path.join(packageDir, 'native', 'bin')
 
   return {
-    createdb: path.join(binDir, `createdb${extension}`),
     initdb: path.join(binDir, `initdb${extension}`),
-    pgCtl: path.join(binDir, `pg_ctl${extension}`),
     postgres: path.join(binDir, `postgres${extension}`),
-    psql: path.join(binDir, `psql${extension}`),
     source: 'download',
     version,
   }

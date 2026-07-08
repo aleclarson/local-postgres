@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
-import { appendFile } from 'node:fs/promises'
+import { appendFile, readFile } from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
@@ -12,7 +12,14 @@ import {
 } from './constants'
 import { listenLabel, requireNonEmptyString, resolveListenOptions } from './listen'
 import { ensureDatabase, waitForIdleConnections, waitForReady } from './postgres-client'
-import { commandError, openLogTarget, runCommand, waitForExit, type ExitResult } from './process'
+import {
+  commandError,
+  delay,
+  openLogTarget,
+  runCommand,
+  waitForExit,
+  type ExitResult,
+} from './process'
 import {
   LocalPostgresError,
   type EnsurePostgresDatabaseOptions,
@@ -262,35 +269,22 @@ export async function stopPostgresDataDir(options: StopPostgresDataDirOptions): 
     })
   }
 
-  const binaries =
-    options.binaries ??
-    (await resolvePostgresBinariesForLifecycle(options.postgres, {
-      logger,
-      needsInitdb: false,
-    }))
-
-  if (!binaries.pgCtl) {
-    throw new LocalPostgresError('Resolved Postgres binaries did not include pg_ctl.')
-  }
+  const pid = await readPostmasterPid(dataDir)
+  if (pid === undefined) return
 
   logger.info(`[postgres] Stopping server for ${dataDir}...`)
   try {
-    await runCommand(
-      binaries.pgCtl,
-      [
-        'stop',
-        '-D',
-        dataDir,
-        '-m',
-        options.mode ?? 'fast',
-        '-w',
-        '-t',
-        String(Math.max(1, Math.ceil(timeoutMs / 1000))),
-      ],
-      { log: options.log },
-    )
+    // postmaster.pid lets background processes stop clusters without pg_ctl.
+    // These signals match PostgreSQL's smart/fast/immediate shutdown modes.
+    process.kill(pid, shutdownSignal(options.mode ?? 'fast'))
+    await waitForPostmasterExit({ dataDir, pid, timeoutMs })
   } catch (error) {
-    throw commandError('Failed to stop the Postgres data directory.', 'pg_ctl', error)
+    if (isNoSuchProcessError(error)) return
+    if (error instanceof LocalPostgresError) throw error
+
+    throw new LocalPostgresError(`Failed to stop the Postgres data directory "${dataDir}".`, {
+      cause: error,
+    })
   }
 }
 
@@ -337,6 +331,76 @@ function formatPostgresConfigValue(value: PostgresConfigValue) {
   }
 
   return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
+}
+
+async function readPostmasterPid(dataDir: string) {
+  try {
+    const pidFile = await readFile(path.join(dataDir, 'postmaster.pid'), 'utf8')
+    const rawPid = pidFile.split(/\r?\n/, 1)[0]?.trim()
+
+    if (!rawPid || !/^\d+$/.test(rawPid)) {
+      throw new LocalPostgresError(`Invalid postmaster.pid file in "${dataDir}".`)
+    }
+
+    const pid = Number.parseInt(rawPid, 10)
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      throw new LocalPostgresError(`Invalid postmaster.pid file in "${dataDir}".`)
+    }
+
+    return pid
+  } catch (error) {
+    if (isNotFoundError(error)) return undefined
+    throw error
+  }
+}
+
+async function waitForPostmasterExit({
+  dataDir,
+  pid,
+  timeoutMs,
+}: {
+  dataDir: string
+  pid: number
+  timeoutMs: number
+}) {
+  const pidPath = path.join(dataDir, 'postmaster.pid')
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() <= deadline) {
+    if (!existsSync(pidPath) || !isProcessRunning(pid)) {
+      return
+    }
+
+    await delay(DEFAULT_READINESS_INTERVAL_MS)
+  }
+
+  throw new LocalPostgresError(
+    `Timed out after ${timeoutMs}ms waiting for Postgres to stop for "${dataDir}".`,
+  )
+}
+
+function shutdownSignal(mode: 'smart' | 'fast' | 'immediate'): NodeJS.Signals {
+  if (mode === 'smart') return 'SIGTERM'
+  if (mode === 'immediate') return 'SIGQUIT'
+  return 'SIGINT'
+}
+
+function isProcessRunning(pid: number) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    if (isNoSuchProcessError(error)) return false
+    throw error
+  }
+}
+
+function isNotFoundError(error: unknown) {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
+}
+
+function isNoSuchProcessError(error: unknown) {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH'
 }
 
 function resolveLogger(logger?: Partial<LocalPostgresLogger>): LocalPostgresLogger {

@@ -215,8 +215,7 @@ const binaries = await resolvePostgresBinaries({
 })
 ```
 
-The result includes `postgres`, `initdb`, optional support tools such as
-`pgCtl`, `createdb`, and `psql`, the binary `source`, and the resolved
+The result includes `postgres`, `initdb`, the binary `source`, and the resolved
 `version` when known.
 
 ## `getPostgresVersion(options?)`
@@ -283,7 +282,8 @@ for the retained child process.
 
 ## `stopPostgresDataDir(options)`
 
-Stops a running cluster by data directory using `pg_ctl stop`:
+Stops a running cluster by reading `postmaster.pid` from the data directory and
+sending the matching PostgreSQL shutdown signal:
 
 ```ts
 await stopPostgresDataDir({
@@ -296,7 +296,12 @@ await stopPostgresDataDir({
 This does not remove `dataDir`. Cleanup of any outer root directory remains the
 caller's responsibility.
 
-Set `waitForIdle` to wait for active connections to drain before `pg_ctl stop`:
+If `postmaster.pid` is absent, the function treats the cluster as already
+stopped. This allows cleanup code to be idempotent and avoids requiring
+`pg_ctl` in embedded Postgres packages.
+
+Set `waitForIdle` to wait for active connections to drain before signaling the
+postmaster:
 
 ```ts
 await stopPostgresDataDir({

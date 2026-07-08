@@ -688,10 +688,26 @@ test('core ensures a database over a socket connection', async () => {
   ])
 })
 
-test('core stops a data directory with pg_ctl', async () => {
+test('core stops a data directory from postmaster.pid', async () => {
   const root = await tempPath()
   const dataDir = join(root, 'data')
-  const { execFileMock, stopPostgresDataDir } = await loadSubject()
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'postmaster.pid'), ['98765', dataDir, Date.now()].join('\n'))
+
+  const killSignals: Array<string | number | undefined> = []
+  vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
+    killSignals.push(signal)
+
+    if (signal === 0) {
+      throw Object.assign(new Error('kill ESRCH'), {
+        code: 'ESRCH',
+      })
+    }
+
+    return true
+  })
+
+  const { stopPostgresDataDir } = await loadSubject()
 
   await stopPostgresDataDir({
     dataDir,
@@ -699,12 +715,7 @@ test('core stops a data directory with pg_ctl', async () => {
     timeoutMs: 2_200,
   })
 
-  expect(execFileMock).toHaveBeenCalledWith(
-    'pg_ctl',
-    ['stop', '-D', dataDir, '-m', 'smart', '-w', '-t', '3'],
-    expect.anything(),
-    expect.anything(),
-  )
+  expect(killSignals).toEqual(['SIGTERM', 0])
 })
 
 function defaultExecFile(command: string, args: string[]): ExecFileResult {
