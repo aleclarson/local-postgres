@@ -1,183 +1,120 @@
-import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
-import { createServer } from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { assertDataDirectoryVersion, resolvePostgresBinaries } from './binaries'
-import {
-  DEFAULT_DATABASE,
-  DEFAULT_HOST,
-  DEFAULT_READINESS_INTERVAL_MS,
-  DEFAULT_READINESS_TIMEOUT_MS,
-  DEFAULT_STOP_TIMEOUT_MS,
-} from './constants'
+import { resolvePostgresBinariesForLifecycle } from './binaries'
+import { ensurePostgresDatabase, initPostgresDataDir, startPostgresDataDir } from './core'
+import { DEFAULT_DATABASE } from './constants'
 import { createConnectionString, createEnv } from './connection'
-import { ensureDatabase, ensureSuperuser, waitForReady } from './postgres-client'
-import { commandError, openLogTarget, runCommand, waitForExit, type ExitResult } from './process'
 import {
-  LocalPostgresError,
-  type LocalPostgresLogger,
-  type LocalPostgresServer,
-  type StartPostgresOptions,
-} from './types'
+  listenClientHost,
+  requireNonEmptyString,
+  resolveStartPostgresListenOptions,
+} from './listen'
+import { ensureSuperuser } from './postgres-client'
+import type { LocalPostgresLogger, LocalPostgresServer, StartPostgresOptions } from './types'
 
 export async function startPostgres(options: StartPostgresOptions): Promise<LocalPostgresServer> {
   const dataDir = requireNonEmptyString(options.dataDir, 'dataDir')
   const database = options.database
     ? requireNonEmptyString(options.database, 'database')
     : DEFAULT_DATABASE
-  const host = options.host ? requireNonEmptyString(options.host, 'host') : DEFAULT_HOST
-  const logger = resolveLogger(options.logger)
   const bootstrapUser = os.userInfo().username
-  const port =
-    options.port === undefined
-      ? await findAvailablePort(host)
-      : await assertAvailablePort(host, normalizePort(options.port))
-  const readinessTimeoutMs = options.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS
-  const readinessIntervalMs = options.readinessIntervalMs ?? DEFAULT_READINESS_INTERVAL_MS
-  const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS
+  const listen = await resolveStartPostgresListenOptions({
+    host: options.host,
+    listen: options.listen,
+    port: options.port,
+  })
+  const logger = resolveLogger(options.logger)
 
-  if (!existsSync(dataDir)) {
-    mkdirSync(dataDir, { recursive: true })
-  }
-
+  mkdirSync(dataDir, { recursive: true })
   const needsInitdb = !existsSync(path.join(dataDir, 'PG_VERSION'))
-  const binaries = await resolvePostgresBinaries(options.postgres, {
+  const binaries = await resolvePostgresBinariesForLifecycle(options.postgres, {
     logger,
     needsInitdb,
   })
 
-  if (!needsInitdb && binaries.version) {
-    assertDataDirectoryVersion(dataDir, binaries.version)
-  }
-
-  if (needsInitdb) {
-    logger.info('[postgres] Initializing database cluster...')
-    try {
-      // Trust authentication keeps the package local-dev friendly. Callers that
-      // need stronger auth can initialize and pass their own data directory.
-      await runCommand(binaries.initdb, [
-        '-D',
-        dataDir,
-        '-U',
-        bootstrapUser,
-        '--auth=trust',
-        '--no-locale',
-        '-E',
-        'UTF8',
-      ])
-    } catch (error) {
-      throw commandError('Failed to initialize the Postgres data directory.', 'initdb', error)
-    }
-  }
-
-  logger.info(`[postgres] Starting server on ${host}:${port}...`)
-  const logFile = openLogTarget(options.log)
-  let stopped = false
-  let ready = false
-  let spawnError: Error | undefined
-  let exitResult: ExitResult | undefined
-
-  const proc = spawn(binaries.postgres, ['-D', dataDir, '-h', host, '-p', String(port)], {
-    stdio: logFile.stdio,
+  await initPostgresDataDir({
+    // Trust authentication keeps the package local-dev friendly. Callers that
+    // need stronger auth can initialize through the core API first.
+    auth: 'trust',
+    binaries,
+    config: options.config,
+    dataDir,
+    encoding: 'UTF8',
+    locale: false,
+    postgres: options.postgres,
+    username: bootstrapUser,
+    logger: options.logger,
   })
 
-  const exitPromise = new Promise<ExitResult>((resolve) => {
-    proc.once('exit', (code, signal) => {
-      exitResult = { code, signal }
-      logFile.close()
-      if (ready && !stopped && code !== 0 && code !== null) {
-        logger.error(`[postgres] Process exited unexpectedly with code ${code}.`)
-      }
-      resolve(exitResult)
-    })
+  const postgres = await startPostgresDataDir({
+    binaries,
+    dataDir,
+    listen,
+    log: options.log,
+    logger: options.logger,
+    postgres: options.postgres,
+    readinessIntervalMs: options.readinessIntervalMs,
+    readinessTimeoutMs: options.readinessTimeoutMs,
+    stopTimeoutMs: options.stopTimeoutMs,
   })
-
-  proc.once('error', (error) => {
-    spawnError = error
-    logFile.close()
-  })
-
-  const stop = async () => {
-    if (stopped) return
-    stopped = true
-
-    if (exitResult || spawnError) return
-
-    proc.kill('SIGINT')
-    const didExitAfterSigint = await waitForExit(exitPromise, stopTimeoutMs)
-    if (didExitAfterSigint) return
-
-    proc.kill('SIGTERM')
-    await waitForExit(exitPromise, stopTimeoutMs)
-  }
 
   try {
-    await waitForReady({
-      host,
-      port,
-      user: bootstrapUser,
-      getSpawnError: () => spawnError,
-      getExitResult: () => exitResult,
-      timeoutMs: readinessTimeoutMs,
-      intervalMs: readinessIntervalMs,
-    })
-    ready = true
-
     if (options.superuser) {
       await ensureSuperuser({
-        host,
-        port,
+        listen,
         user: bootstrapUser,
         superuser: options.superuser,
       })
     }
 
     if (database !== DEFAULT_DATABASE) {
-      await ensureDatabase({
-        host,
-        port,
-        user: bootstrapUser,
+      await ensurePostgresDatabase({
         database,
+        listen,
+        user: bootstrapUser,
       })
     }
   } catch (error) {
-    await stop()
+    await postgres.stop()
     throw error
   }
 
   const connectionString = createConnectionString({
-    host,
-    port,
     database,
+    listen,
     user: options.superuser?.name,
     password: options.superuser?.password,
   })
   const env = createEnv({
+    connectionString,
     dataDir,
     database,
-    host,
-    port,
-    connectionString,
+    listen,
     user: options.superuser?.name,
     password: options.superuser?.password,
   })
-
-  logger.info(`[postgres] Server ready on ${host}:${port}.`)
+  const host = listenClientHost(listen)
 
   return {
     dataDir,
     database,
+    listen,
     host,
-    port,
+    port: listen.port,
+    ...(listen.type === 'socket'
+      ? {
+          socketDir: listen.socketDir,
+        }
+      : {}),
     user: options.superuser?.name,
     password: options.superuser?.password,
-    pid: proc.pid,
+    pid: postgres.pid,
     connectionString,
     env,
-    stop,
-    [Symbol.asyncDispose]: stop,
+    stop: postgres.stop,
+    [Symbol.asyncDispose]: postgres.stop,
   }
 }
 
@@ -190,58 +127,3 @@ function resolveLogger(logger?: Partial<LocalPostgresLogger>): LocalPostgresLogg
 }
 
 function noop() {}
-
-function requireNonEmptyString(value: string, name: string) {
-  if (value.trim() === '') {
-    throw new TypeError(`${name} must not be empty.`)
-  }
-  return value
-}
-
-function normalizePort(port: number) {
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new RangeError('port must be an integer between 1 and 65535.')
-  }
-  return port
-}
-
-async function assertAvailablePort(host: string, port: number) {
-  try {
-    return await probePort(host, port)
-  } catch (error) {
-    throw new LocalPostgresError(
-      `Port ${port} is not available on ${host}. Choose another port or stop the process using it.`,
-      { cause: error },
-    )
-  }
-}
-
-async function findAvailablePort(host: string) {
-  return probePort(host, 0)
-}
-
-function probePort(host: string, port: number) {
-  return new Promise<number>((resolve, reject) => {
-    const server = createServer()
-
-    server.unref()
-    server.once('error', reject)
-    server.listen(port, host, () => {
-      const address = server.address()
-      if (typeof address !== 'object' || address === null) {
-        server.close(() => {
-          reject(new LocalPostgresError('Unable to determine the selected port.'))
-        })
-        return
-      }
-
-      server.close((error) => {
-        if (error) {
-          reject(error)
-          return
-        }
-        resolve(address.port)
-      })
-    })
-  })
-}

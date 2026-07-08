@@ -48,6 +48,128 @@ export interface PostgresBinaryOptions {
   cacheDir?: string
 }
 
+export interface ResolvedPostgresBinaries {
+  initdb: string
+  postgres: string
+  pgCtl?: string
+  createdb?: string
+  psql?: string
+  source: 'local' | 'download'
+  version?: string
+}
+
+export type PostgresConfigValue = string | number | boolean
+
+export type PostgresListenOptions =
+  | {
+      type: 'tcp'
+      host?: string
+      port?: number
+    }
+  | {
+      type: 'socket'
+      socketDir: string
+      port?: number
+    }
+
+export type ResolvedPostgresListenOptions =
+  | {
+      type: 'tcp'
+      host: string
+      port: number
+    }
+  | {
+      type: 'socket'
+      socketDir: string
+      port: number
+    }
+
+export interface InitPostgresDataDirOptions {
+  /**
+   * Actual Postgres cluster directory. This is the directory that contains
+   * `PG_VERSION`, not necessarily the caller's outer workspace directory.
+   */
+  dataDir: string
+  binaries?: ResolvedPostgresBinaries
+  postgres?: PostgresBinaryOptions
+  encoding?: string
+  locale?: string | false
+  username?: string
+  auth?: string
+  noSync?: boolean
+  config?: Record<string, PostgresConfigValue>
+  log?: LocalPostgresLogTarget
+  logger?: Partial<LocalPostgresLogger>
+}
+
+export interface InitPostgresDataDirResult {
+  dataDir: string
+  version?: string
+}
+
+export interface StartPostgresDataDirOptions {
+  /**
+   * Actual Postgres cluster directory to start.
+   */
+  dataDir: string
+  binaries?: ResolvedPostgresBinaries
+  listen?: PostgresListenOptions
+  postgres?: PostgresBinaryOptions
+  postgresOptions?: string[]
+  log?: LocalPostgresLogTarget
+  logger?: Partial<LocalPostgresLogger>
+  readinessTimeoutMs?: number
+  readinessIntervalMs?: number
+  stopTimeoutMs?: number
+}
+
+export interface LocalPostgresProcess {
+  dataDir: string
+  listen: ResolvedPostgresListenOptions
+  port: number
+  host?: string
+  socketDir?: string
+  pid?: number
+  stop(): Promise<void>
+  [Symbol.asyncDispose](): Promise<void>
+}
+
+export interface StopPostgresDataDirOptions {
+  dataDir: string
+  binaries?: ResolvedPostgresBinaries
+  listen?: PostgresListenOptions
+  postgres?: PostgresBinaryOptions
+  mode?: 'smart' | 'fast' | 'immediate'
+  waitForIdle?:
+    | boolean
+    | {
+        database?: string
+        minConnections?: number
+        timeoutMs?: number
+        intervalMs?: number
+      }
+  timeoutMs?: number
+  log?: LocalPostgresLogTarget
+  logger?: Partial<LocalPostgresLogger>
+}
+
+export interface WaitForPostgresReadyOptions {
+  listen: PostgresListenOptions
+  database?: string
+  user?: string
+  password?: string
+  timeoutMs?: number
+  intervalMs?: number
+}
+
+export interface EnsurePostgresDatabaseOptions {
+  listen: PostgresListenOptions
+  database: string
+  bootstrapDatabase?: string
+  user?: string
+  password?: string
+}
+
 export interface StartPostgresOptions {
   /**
    * Directory containing the Postgres data cluster. The directory is created
@@ -71,6 +193,16 @@ export interface StartPostgresOptions {
    * Defaults to `127.0.0.1`.
    */
   host?: string
+  /**
+   * Lower-level listen configuration. When omitted, the friendly API starts a
+   * TCP server using `host` and `port`.
+   */
+  listen?: PostgresListenOptions
+  /**
+   * PostgreSQL configuration values appended after a new cluster is
+   * initialized. Existing clusters are left untouched.
+   */
+  config?: Record<string, PostgresConfigValue>
   /**
    * Superuser role to create or update after the server is ready. When set,
    * returned connection details include this role's credentials.
@@ -124,8 +256,10 @@ export interface LocalPostgresEnv {
 export interface LocalPostgresServer {
   dataDir: string
   database: string
+  listen: ResolvedPostgresListenOptions
   host: string
   port: number
+  socketDir?: string
   user?: string
   password?: string
   pid?: number

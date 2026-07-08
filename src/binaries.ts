@@ -14,16 +14,10 @@ import {
   LocalPostgresError,
   type LocalPostgresLogger,
   type PostgresBinaryOptions,
+  type ResolvedPostgresBinaries,
 } from './types'
 
 const DEFAULT_REGISTRY_URL = 'https://registry.npmjs.org'
-
-export interface ResolvedPostgresBinaries {
-  initdb: string
-  postgres: string
-  source: 'local' | 'download'
-  version?: string
-}
 
 interface NpmPackageMetadata {
   'dist-tags'?: {
@@ -41,18 +35,30 @@ interface NpmPackageMetadata {
 }
 
 export async function resolvePostgresBinaries(
+  options?: PostgresBinaryOptions,
+): Promise<ResolvedPostgresBinaries> {
+  return resolvePostgresBinariesForLifecycle(options, {
+    checkAvailability: true,
+    logger: noopLogger,
+    needsInitdb: true,
+  })
+}
+
+export async function resolvePostgresBinariesForLifecycle(
   options: PostgresBinaryOptions | undefined,
   {
+    checkAvailability = options !== undefined,
     logger,
     needsInitdb,
   }: {
+    checkAvailability?: boolean
     logger: LocalPostgresLogger
     needsInitdb: boolean
   },
 ): Promise<ResolvedPostgresBinaries> {
   const strategy = options?.strategy ?? (options ? 'prefer-local' : 'local-only')
   const localOptions = {
-    checkAvailability: options !== undefined,
+    checkAvailability,
     needsInitdb,
     version: options?.version,
   }
@@ -122,8 +128,11 @@ async function resolveLocalPostgresBinaries({
   version?: string
 }): Promise<ResolvedPostgresBinaries> {
   const binaries: ResolvedPostgresBinaries = {
+    createdb: 'createdb',
     initdb: 'initdb',
+    pgCtl: 'pg_ctl',
     postgres: 'postgres',
+    psql: 'psql',
     source: 'local',
   }
 
@@ -302,8 +311,11 @@ function downloadedBinaryPaths(packageDir: string, version: string): ResolvedPos
   const binDir = path.join(packageDir, 'native', 'bin')
 
   return {
+    createdb: path.join(binDir, `createdb${extension}`),
     initdb: path.join(binDir, `initdb${extension}`),
+    pgCtl: path.join(binDir, `pg_ctl${extension}`),
     postgres: path.join(binDir, `postgres${extension}`),
+    psql: path.join(binDir, `psql${extension}`),
     source: 'download',
     version,
   }
@@ -466,3 +478,11 @@ function normalizeVersion(version: string) {
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
+
+const noopLogger: LocalPostgresLogger = {
+  info: noop,
+  warn: noop,
+  error: noop,
+}
+
+function noop() {}

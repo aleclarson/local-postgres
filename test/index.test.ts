@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, Writable } from 'node:stream'
@@ -110,6 +110,7 @@ async function loadSubject({
 
   const child = new FakeChildProcess()
   const netServers: FakeNetServer[] = []
+  const pgClients: unknown[] = []
   const pgQueries: Array<{ sql: string; values?: unknown[] }> = []
 
   const execFileMock = vi.fn(
@@ -150,6 +151,10 @@ async function loadSubject({
   })
 
   class FakePgClient {
+    constructor(config: unknown) {
+      pgClients.push(config)
+    }
+
     async connect() {}
 
     async query(sql: string, values?: unknown[]) {
@@ -185,15 +190,22 @@ async function loadSubject({
   vi.stubGlobal('fetch', fetchMock)
 
   const subject = await import('../src/index')
+  const core = await import('../src/core')
 
   return {
     child,
     execFileMock,
     fetchMock,
+    getPostgresVersion: core.getPostgresVersion,
+    initPostgresDataDir: core.initPostgresDataDir,
     netServers,
+    pgClients,
     pgQueries,
     spawnMock,
+    ensurePostgresDatabase: core.ensurePostgresDatabase,
     startPostgres: subject.startPostgres,
+    startPostgresDataDir: core.startPostgresDataDir,
+    stopPostgresDataDir: core.stopPostgresDataDir,
     DEFAULT_POSTGRES_CACHE_DIR: subject.DEFAULT_POSTGRES_CACHE_DIR,
     unpackTarMock,
   }
@@ -554,6 +566,145 @@ test('rejects managed downloads before extraction when integrity verification fa
 
   expect(unpackTarMock).not.toHaveBeenCalled()
   expect(spawnMock).not.toHaveBeenCalled()
+})
+
+test('core resolves the postgres binary version before a data directory exists', async () => {
+  const { execFileMock, getPostgresVersion } = await loadSubject()
+
+  await expect(getPostgresVersion()).resolves.toBe('18.4')
+
+  expect(execFileMock.mock.calls.map(([command, args]) => [command, args])).toEqual([
+    ['postgres', ['--version']],
+  ])
+})
+
+test('core initializes a data directory with config without starting postgres', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, '17.0')
+  const { execFileMock, initPostgresDataDir, spawnMock } = await loadSubject()
+
+  await initPostgresDataDir({
+    dataDir,
+    noSync: true,
+    auth: 'trust',
+    encoding: 'UNICODE',
+    locale: false,
+    config: {
+      unix_socket_directories: dataDir,
+      listen_addresses: '',
+      shared_buffers: '12MB',
+      fsync: false,
+      log_min_duration_statement: 0,
+    },
+  })
+
+  expect(execFileMock).toHaveBeenCalledWith(
+    'initdb',
+    ['-D', dataDir, '-U', 'test_user', '--auth=trust', '--no-locale', '-E', 'UNICODE', '--nosync'],
+    expect.anything(),
+    expect.anything(),
+  )
+  expect(await readFile(join(dataDir, 'postgresql.conf'), 'utf8')).toContain(
+    [
+      '# Appended by local-postgres.',
+      `unix_socket_directories = '${dataDir}'`,
+      "listen_addresses = ''",
+      "shared_buffers = '12MB'",
+      'fsync = off',
+      'log_min_duration_statement = 0',
+    ].join('\n'),
+  )
+  expect(spawnMock).not.toHaveBeenCalled()
+})
+
+test('core starts a data directory in socket mode', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  const socketDir = join(root, '17.0')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
+  const { child, pgClients, spawnMock, startPostgresDataDir } = await loadSubject()
+
+  const server = await startPostgresDataDir({
+    dataDir,
+    listen: {
+      type: 'socket',
+      socketDir,
+    },
+    stopTimeoutMs: 1,
+  })
+
+  expect(spawnMock).toHaveBeenCalledWith(
+    'postgres',
+    ['-D', dataDir, '-k', socketDir, '-h', '', '-p', '5432'],
+    expect.anything(),
+  )
+  expect(pgClients[0]).toMatchObject({
+    database: 'postgres',
+    host: socketDir,
+    port: 5432,
+    user: 'test_user',
+  })
+  expect(server).toMatchObject({
+    dataDir,
+    listen: {
+      type: 'socket',
+      socketDir,
+      port: 5432,
+    },
+    port: 5432,
+    socketDir,
+    pid: 12_345,
+  })
+
+  await server.stop()
+
+  expect(child.signals).toEqual(['SIGINT'])
+})
+
+test('core ensures a database over a socket connection', async () => {
+  const root = await tempPath()
+  const socketDir = join(root, '17.0')
+  const { ensurePostgresDatabase, pgClients, pgQueries } = await loadSubject()
+
+  await ensurePostgresDatabase({
+    listen: {
+      type: 'socket',
+      socketDir,
+      port: 54_444,
+    },
+    database: 'test',
+  })
+
+  expect(pgClients[0]).toMatchObject({
+    database: 'postgres',
+    host: socketDir,
+    port: 54_444,
+  })
+  expect(pgQueries.map((query) => query.sql)).toEqual([
+    'SELECT 1 FROM pg_database WHERE datname = $1',
+    'CREATE DATABASE "test"',
+  ])
+})
+
+test('core stops a data directory with pg_ctl', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  const { execFileMock, stopPostgresDataDir } = await loadSubject()
+
+  await stopPostgresDataDir({
+    dataDir,
+    mode: 'smart',
+    timeoutMs: 2_200,
+  })
+
+  expect(execFileMock).toHaveBeenCalledWith(
+    'pg_ctl',
+    ['stop', '-D', dataDir, '-m', 'smart', '-w', '-t', '3'],
+    expect.anything(),
+    expect.anything(),
+  )
 })
 
 function defaultExecFile(command: string, args: string[]): ExecFileResult {

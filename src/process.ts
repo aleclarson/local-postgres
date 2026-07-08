@@ -1,5 +1,5 @@
 import { execFile, type StdioOptions } from 'node:child_process'
-import { closeSync, mkdirSync, openSync } from 'node:fs'
+import { appendFileSync, closeSync, mkdirSync, openSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { LocalPostgresError, type LocalPostgresLogTarget } from './types'
@@ -52,7 +52,13 @@ export function openLogTarget(log: LocalPostgresLogTarget | undefined): {
   }
 }
 
-export function runCommand(command: string, args: string[]): Promise<CommandResult> {
+export function runCommand(
+  command: string,
+  args: string[],
+  options: {
+    log?: LocalPostgresLogTarget
+  } = {},
+): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     execFile(
       command,
@@ -62,21 +68,41 @@ export function runCommand(command: string, args: string[]): Promise<CommandResu
         maxBuffer: 10 * 1024 * 1024,
       },
       (error, stdout, stderr) => {
+        const result = {
+          stdout: stdout?.toString() ?? '',
+          stderr: stderr?.toString() ?? '',
+        }
+        writeCommandOutput(options.log, result)
+
         if (error) {
           const commandFailure = error as CommandFailure
-          commandFailure.stdout = stdout?.toString() ?? ''
-          commandFailure.stderr = stderr?.toString() ?? ''
+          commandFailure.stdout = result.stdout
+          commandFailure.stderr = result.stderr
           reject(commandFailure)
           return
         }
 
-        resolve({
-          stdout: stdout?.toString() ?? '',
-          stderr: stderr?.toString() ?? '',
-        })
+        resolve(result)
       },
     )
   })
+}
+
+function writeCommandOutput(
+  log: LocalPostgresLogTarget | undefined,
+  { stderr, stdout }: CommandResult,
+) {
+  if (!log || log === 'ignore') return
+
+  if (log === 'inherit') {
+    if (stdout) process.stdout.write(stdout)
+    if (stderr) process.stderr.write(stderr)
+    return
+  }
+
+  mkdirSync(path.dirname(log.filePath), { recursive: true })
+  appendFileSync(log.filePath, stdout)
+  appendFileSync(log.filePath, stderr)
 }
 
 export function commandError(message: string, command: string, error: unknown) {

@@ -1,0 +1,356 @@
+import { spawn } from 'node:child_process'
+import { existsSync, mkdirSync } from 'node:fs'
+import { appendFile } from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+import { assertDataDirectoryVersion, resolvePostgresBinariesForLifecycle } from './binaries'
+import {
+  DEFAULT_READINESS_INTERVAL_MS,
+  DEFAULT_READINESS_TIMEOUT_MS,
+  DEFAULT_STOP_TIMEOUT_MS,
+} from './constants'
+import { listenLabel, requireNonEmptyString, resolveListenOptions } from './listen'
+import { ensureDatabase, waitForIdleConnections, waitForReady } from './postgres-client'
+import { commandError, openLogTarget, runCommand, waitForExit, type ExitResult } from './process'
+import {
+  LocalPostgresError,
+  type EnsurePostgresDatabaseOptions,
+  type InitPostgresDataDirOptions,
+  type InitPostgresDataDirResult,
+  type LocalPostgresLogger,
+  type LocalPostgresProcess,
+  type PostgresBinaryOptions,
+  type PostgresConfigValue,
+  type StartPostgresDataDirOptions,
+  type StopPostgresDataDirOptions,
+  type WaitForPostgresReadyOptions,
+} from './types'
+
+export { resolvePostgresBinaries } from './binaries'
+export { DEFAULT_POSTGRES_CACHE_DIR, LocalPostgresError } from './types'
+export type {
+  EnsurePostgresDatabaseOptions,
+  InitPostgresDataDirOptions,
+  InitPostgresDataDirResult,
+  LocalPostgresLogTarget,
+  LocalPostgresLogger,
+  LocalPostgresProcess,
+  PostgresBinaryOptions,
+  PostgresBinaryStrategy,
+  PostgresConfigValue,
+  PostgresListenOptions,
+  ResolvedPostgresBinaries,
+  ResolvedPostgresListenOptions,
+  StartPostgresDataDirOptions,
+  StopPostgresDataDirOptions,
+  WaitForPostgresReadyOptions,
+} from './types'
+
+export async function getPostgresVersion(
+  options: {
+    postgres?: PostgresBinaryOptions
+  } = {},
+): Promise<string> {
+  const binaries = await resolvePostgresBinariesForLifecycle(options.postgres, {
+    checkAvailability: true,
+    logger: noopLogger,
+    needsInitdb: false,
+  })
+
+  if (!binaries.version) {
+    throw new LocalPostgresError('Resolved Postgres binary did not report a version.')
+  }
+
+  return binaries.version
+}
+
+export async function initPostgresDataDir(
+  options: InitPostgresDataDirOptions,
+): Promise<InitPostgresDataDirResult> {
+  const dataDir = requireNonEmptyString(options.dataDir, 'dataDir')
+  const logger = resolveLogger(options.logger)
+
+  mkdirSync(dataDir, { recursive: true })
+
+  const needsInitdb = !existsSync(path.join(dataDir, 'PG_VERSION'))
+  const binaries =
+    options.binaries ??
+    (await resolvePostgresBinariesForLifecycle(options.postgres, {
+      logger,
+      needsInitdb,
+    }))
+
+  if (!needsInitdb) {
+    if (binaries.version) {
+      assertDataDirectoryVersion(dataDir, binaries.version)
+    }
+
+    return {
+      dataDir,
+      version: binaries.version,
+    }
+  }
+
+  const username = options.username
+    ? requireNonEmptyString(options.username, 'username')
+    : os.userInfo().username
+  const args = ['-D', dataDir, '-U', username]
+
+  if (options.auth !== undefined) {
+    args.push(`--auth=${requireNonEmptyString(options.auth, 'auth')}`)
+  }
+
+  if (options.locale === false) {
+    args.push('--no-locale')
+  } else if (options.locale !== undefined) {
+    args.push('--locale', requireNonEmptyString(options.locale, 'locale'))
+  }
+
+  if (options.encoding !== undefined) {
+    args.push('-E', requireNonEmptyString(options.encoding, 'encoding'))
+  }
+
+  if (options.noSync) {
+    args.push('--nosync')
+  }
+
+  logger.info('[postgres] Initializing database cluster...')
+  try {
+    await runCommand(binaries.initdb, args, { log: options.log })
+  } catch (error) {
+    throw commandError('Failed to initialize the Postgres data directory.', 'initdb', error)
+  }
+
+  if (options.config && Object.keys(options.config).length > 0) {
+    await appendFile(path.join(dataDir, 'postgresql.conf'), formatPostgresConfig(options.config))
+  }
+
+  return {
+    dataDir,
+    version: binaries.version,
+  }
+}
+
+export async function startPostgresDataDir(
+  options: StartPostgresDataDirOptions,
+): Promise<LocalPostgresProcess> {
+  const dataDir = requireNonEmptyString(options.dataDir, 'dataDir')
+  const logger = resolveLogger(options.logger)
+  const readinessTimeoutMs = options.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS
+  const readinessIntervalMs = options.readinessIntervalMs ?? DEFAULT_READINESS_INTERVAL_MS
+  const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS
+  const listen = await resolveListenOptions(options.listen, {
+    checkTcpPort: true,
+    tcpPort: 'findAvailable',
+  })
+
+  const binaries =
+    options.binaries ??
+    (await resolvePostgresBinariesForLifecycle(options.postgres, {
+      logger,
+      needsInitdb: false,
+    }))
+
+  if (binaries.version) {
+    assertDataDirectoryVersion(dataDir, binaries.version)
+  }
+
+  if (listen.type === 'socket') {
+    mkdirSync(listen.socketDir, { recursive: true })
+  }
+
+  logger.info(`[postgres] Starting server on ${listenLabel(listen)}...`)
+  const logFile = openLogTarget(options.log)
+  let stopped = false
+  let ready = false
+  let spawnError: Error | undefined
+  let exitResult: ExitResult | undefined
+  const args =
+    listen.type === 'socket'
+      ? ['-D', dataDir, '-k', listen.socketDir, '-h', '', '-p', String(listen.port)]
+      : ['-D', dataDir, '-h', listen.host, '-p', String(listen.port)]
+
+  args.push(...(options.postgresOptions ?? []))
+
+  const proc = spawn(binaries.postgres, args, {
+    stdio: logFile.stdio,
+  })
+
+  const exitPromise = new Promise<ExitResult>((resolve) => {
+    proc.once('exit', (code, signal) => {
+      exitResult = { code, signal }
+      logFile.close()
+      if (ready && !stopped && code !== 0 && code !== null) {
+        logger.error(`[postgres] Process exited unexpectedly with code ${code}.`)
+      }
+      resolve(exitResult)
+    })
+  })
+
+  proc.once('error', (error) => {
+    spawnError = error
+    logFile.close()
+  })
+
+  const stop = async () => {
+    if (stopped) return
+    stopped = true
+
+    if (exitResult || spawnError) return
+
+    proc.kill('SIGINT')
+    const didExitAfterSigint = await waitForExit(exitPromise, stopTimeoutMs)
+    if (didExitAfterSigint) return
+
+    proc.kill('SIGTERM')
+    await waitForExit(exitPromise, stopTimeoutMs)
+  }
+
+  try {
+    await waitForReady({
+      listen,
+      user: os.userInfo().username,
+      getSpawnError: () => spawnError,
+      getExitResult: () => exitResult,
+      timeoutMs: readinessTimeoutMs,
+      intervalMs: readinessIntervalMs,
+    })
+    ready = true
+  } catch (error) {
+    await stop()
+    throw error
+  }
+
+  logger.info(`[postgres] Server ready on ${listenLabel(listen)}.`)
+
+  return {
+    dataDir,
+    listen,
+    port: listen.port,
+    ...(listen.type === 'socket'
+      ? {
+          socketDir: listen.socketDir,
+        }
+      : {
+          host: listen.host,
+        }),
+    pid: proc.pid,
+    stop,
+    [Symbol.asyncDispose]: stop,
+  }
+}
+
+export async function stopPostgresDataDir(options: StopPostgresDataDirOptions): Promise<void> {
+  const dataDir = requireNonEmptyString(options.dataDir, 'dataDir')
+  const logger = resolveLogger(options.logger)
+  const timeoutMs = options.timeoutMs ?? DEFAULT_STOP_TIMEOUT_MS
+
+  if (options.waitForIdle) {
+    if (!options.listen) {
+      throw new TypeError('listen is required when waitForIdle is enabled.')
+    }
+
+    const waitOptions = options.waitForIdle === true ? {} : options.waitForIdle
+    const listen = await resolveListenOptions(options.listen)
+    await waitForIdleConnections({
+      database: waitOptions.database,
+      intervalMs: waitOptions.intervalMs ?? DEFAULT_READINESS_INTERVAL_MS,
+      listen,
+      minConnections: waitOptions.minConnections ?? 0,
+      timeoutMs: waitOptions.timeoutMs ?? timeoutMs,
+    })
+  }
+
+  const binaries =
+    options.binaries ??
+    (await resolvePostgresBinariesForLifecycle(options.postgres, {
+      logger,
+      needsInitdb: false,
+    }))
+
+  if (!binaries.pgCtl) {
+    throw new LocalPostgresError('Resolved Postgres binaries did not include pg_ctl.')
+  }
+
+  logger.info(`[postgres] Stopping server for ${dataDir}...`)
+  try {
+    await runCommand(
+      binaries.pgCtl,
+      [
+        'stop',
+        '-D',
+        dataDir,
+        '-m',
+        options.mode ?? 'fast',
+        '-w',
+        '-t',
+        String(Math.max(1, Math.ceil(timeoutMs / 1000))),
+      ],
+      { log: options.log },
+    )
+  } catch (error) {
+    throw commandError('Failed to stop the Postgres data directory.', 'pg_ctl', error)
+  }
+}
+
+export async function waitForPostgresReady(options: WaitForPostgresReadyOptions): Promise<void> {
+  await waitForReady({
+    database: options.database,
+    listen: await resolveListenOptions(options.listen),
+    password: options.password,
+    user: options.user,
+    getSpawnError: () => undefined,
+    getExitResult: () => undefined,
+    timeoutMs: options.timeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS,
+    intervalMs: options.intervalMs ?? DEFAULT_READINESS_INTERVAL_MS,
+  })
+}
+
+export async function ensurePostgresDatabase(
+  options: EnsurePostgresDatabaseOptions,
+): Promise<void> {
+  await ensureDatabase({
+    bootstrapDatabase: options.bootstrapDatabase,
+    database: requireNonEmptyString(options.database, 'database'),
+    listen: await resolveListenOptions(options.listen),
+    password: options.password,
+    user: options.user,
+  })
+}
+
+function formatPostgresConfig(config: Record<string, PostgresConfigValue>) {
+  const lines = Object.entries(config).map(([key, value]) => {
+    return `${requireNonEmptyString(key, 'config key')} = ${formatPostgresConfigValue(value)}`
+  })
+
+  return `\n# Appended by local-postgres.\n${lines.join('\n')}\n`
+}
+
+function formatPostgresConfigValue(value: PostgresConfigValue) {
+  if (typeof value === 'boolean') {
+    return value ? 'on' : 'off'
+  }
+
+  if (typeof value === 'number') {
+    return String(value)
+  }
+
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
+}
+
+function resolveLogger(logger?: Partial<LocalPostgresLogger>): LocalPostgresLogger {
+  return {
+    info: logger?.info ?? noop,
+    warn: logger?.warn ?? noop,
+    error: logger?.error ?? noop,
+  }
+}
+
+const noopLogger: LocalPostgresLogger = {
+  info: noop,
+  warn: noop,
+  error: noop,
+}
+
+function noop() {}

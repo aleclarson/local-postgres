@@ -2,20 +2,26 @@ import { Client } from 'pg'
 
 import { DEFAULT_DATABASE } from './constants'
 import { delay, type ExitResult } from './process'
-import { LocalPostgresError, type LocalPostgresSuperuser } from './types'
+import {
+  LocalPostgresError,
+  type LocalPostgresSuperuser,
+  type ResolvedPostgresListenOptions,
+} from './types'
 
 export async function waitForReady({
-  host,
-  port,
+  database = DEFAULT_DATABASE,
+  listen,
+  password,
   user,
   getSpawnError,
   getExitResult,
   timeoutMs,
   intervalMs,
 }: {
-  host: string
-  port: number
-  user: string
+  database?: string
+  listen: ResolvedPostgresListenOptions
+  password?: string
+  user?: string
   getSpawnError(): Error | undefined
   getExitResult(): ExitResult | undefined
   timeoutMs: number
@@ -43,7 +49,7 @@ export async function waitForReady({
     }
 
     try {
-      await withBootstrapClient({ host, port, user }, async (client) => {
+      await withClient({ database, listen, password, user }, async (client) => {
         await client.query('SELECT 1')
       })
       return
@@ -55,27 +61,29 @@ export async function waitForReady({
   }
 
   throw new LocalPostgresError(
-    `Timed out after ${timeoutMs}ms waiting for Postgres to become ready on ${host}:${port}.`,
+    `Timed out after ${timeoutMs}ms waiting for Postgres to become ready on ${listenLabel(
+      listen,
+    )}.`,
     { cause: lastReadinessError },
   )
 }
 
 export async function ensureSuperuser({
-  host,
-  port,
+  listen,
+  password,
   user,
   superuser,
 }: {
-  host: string
-  port: number
-  user: string
+  listen: ResolvedPostgresListenOptions
+  password?: string
+  user?: string
   superuser: LocalPostgresSuperuser
 }) {
   const roleName = escapeIdent(superuser.name)
   const rolePassword = escapeLiteral(superuser.password)
 
   try {
-    await withBootstrapClient({ host, port, user }, async (client) => {
+    await withClient({ database: DEFAULT_DATABASE, listen, password, user }, async (client) => {
       const existing = await client.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [
         superuser.name,
       ])
@@ -96,18 +104,20 @@ export async function ensureSuperuser({
 }
 
 export async function ensureDatabase({
-  host,
-  port,
+  bootstrapDatabase = DEFAULT_DATABASE,
   user,
+  password,
+  listen,
   database,
 }: {
-  host: string
-  port: number
-  user: string
+  bootstrapDatabase?: string
+  listen: ResolvedPostgresListenOptions
+  password?: string
+  user?: string
   database: string
 }) {
   try {
-    await withBootstrapClient({ host, port, user }, async (client) => {
+    await withClient({ database: bootstrapDatabase, listen, password, user }, async (client) => {
       const existing = await client.query('SELECT 1 FROM pg_database WHERE datname = $1', [
         database,
       ])
@@ -123,22 +133,88 @@ export async function ensureDatabase({
   }
 }
 
-async function withBootstrapClient<T>(
+export async function waitForIdleConnections({
+  database,
+  intervalMs,
+  listen,
+  minConnections,
+  password,
+  timeoutMs,
+  user,
+}: {
+  database?: string
+  intervalMs: number
+  listen: ResolvedPostgresListenOptions
+  minConnections: number
+  password?: string
+  timeoutMs: number
+  user?: string
+}) {
+  const deadline = Date.now() + timeoutMs
+  let lastError: unknown
+
+  while (Date.now() <= deadline) {
+    try {
+      const connectionCount = await withClient(
+        { database: database ?? DEFAULT_DATABASE, listen, password, user },
+        async (client) => {
+          const result = database
+            ? await client.query(
+                `
+                  SELECT count(*)::int AS count
+                  FROM pg_stat_activity
+                  WHERE datname = $1
+                    AND pid <> pg_backend_pid()
+                `,
+                [database],
+              )
+            : await client.query(`
+                SELECT count(*)::int AS count
+                FROM pg_stat_activity
+                WHERE pid <> pg_backend_pid()
+              `)
+
+          return Number((result.rows?.[0] as { count?: unknown } | undefined)?.count ?? 0)
+        },
+      )
+
+      if (connectionCount <= minConnections) {
+        return
+      }
+    } catch (error) {
+      lastError = error
+    }
+
+    await delay(intervalMs)
+  }
+
+  throw new LocalPostgresError(
+    `Timed out after ${timeoutMs}ms waiting for Postgres connections to become idle on ${listenLabel(
+      listen,
+    )}.`,
+    { cause: lastError },
+  )
+}
+
+async function withClient<T>(
   {
-    host,
-    port,
+    database,
+    listen,
+    password,
     user,
   }: {
-    host: string
-    port: number
-    user: string
+    database: string
+    listen: ResolvedPostgresListenOptions
+    password?: string
+    user?: string
   },
   callback: (client: Client) => Promise<T>,
 ) {
   const client = new Client({
-    database: DEFAULT_DATABASE,
-    host,
-    port,
+    database,
+    host: listen.type === 'socket' ? listen.socketDir : listen.host,
+    password,
+    port: listen.port,
     user,
   })
 
@@ -148,6 +224,14 @@ async function withBootstrapClient<T>(
   } finally {
     await client.end()
   }
+}
+
+function listenLabel(listen: ResolvedPostgresListenOptions) {
+  if (listen.type === 'socket') {
+    return `${listen.socketDir}:${listen.port}`
+  }
+
+  return `${listen.host}:${listen.port}`
 }
 
 function escapeIdent(value: string) {

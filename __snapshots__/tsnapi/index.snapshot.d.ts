@@ -19,8 +19,10 @@ export interface LocalPostgresLogger {
 export interface LocalPostgresServer {
   dataDir: string;
   database: string;
+  listen: ResolvedPostgresListenOptions;
   host: string;
   port: number;
+  socketDir?: string;
   user?: string;
   password?: string;
   pid?: number;
@@ -43,6 +45,8 @@ export interface StartPostgresOptions {
   database?: string;
   port?: number;
   host?: string;
+  listen?: PostgresListenOptions;
+  config?: Record<string, PostgresConfigValue>;
   superuser?: LocalPostgresSuperuser;
   log?: LocalPostgresLogTarget;
   postgres?: PostgresBinaryOptions;
@@ -58,6 +62,25 @@ export type LocalPostgresLogTarget = 'ignore' | 'inherit' | {
   filePath: string;
 };
 export type PostgresBinaryStrategy = 'local-only' | 'prefer-local' | 'prefer-download' | 'download-only';
+export type PostgresConfigValue = string | number | boolean;
+export type PostgresListenOptions = {
+  type: 'tcp';
+  host?: string;
+  port?: number;
+} | {
+  type: 'socket';
+  socketDir: string;
+  port?: number;
+};
+export type ResolvedPostgresListenOptions = {
+  type: 'tcp';
+  host: string;
+  port: number;
+} | {
+  type: 'socket';
+  socketDir: string;
+  port: number;
+};
 // #endregion
 
 // #region Classes

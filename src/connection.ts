@@ -1,47 +1,56 @@
-import type { LocalPostgresEnv } from './types'
+import type { LocalPostgresEnv, ResolvedPostgresListenOptions } from './types'
 
 export function createConnectionString({
-  host,
-  port,
   database,
+  listen,
   user,
   password,
 }: {
-  host: string
-  port: number
   database: string
+  listen: ResolvedPostgresListenOptions
   user?: string
   password?: string
 }) {
-  const hostForUrl = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
   const auth =
     user === undefined ? '' : `${encodeURIComponent(user)}:${encodeURIComponent(password ?? '')}@`
 
-  return `postgresql://${auth}${hostForUrl}:${port}/${encodeURIComponent(database)}`
+  if (listen.type === 'socket') {
+    const params = new URLSearchParams({
+      host: listen.socketDir,
+      port: String(listen.port),
+    })
+
+    return `postgresql://${auth}/${encodeURIComponent(database)}?${params}`
+  }
+
+  const hostForUrl =
+    listen.host.includes(':') && !listen.host.startsWith('[') ? `[${listen.host}]` : listen.host
+
+  return `postgresql://${auth}${hostForUrl}:${listen.port}/${encodeURIComponent(database)}`
 }
 
 export function createEnv({
   dataDir,
   database,
-  host,
-  port,
   connectionString,
+  listen,
   user,
   password,
 }: {
   dataDir: string
   database: string
-  host: string
-  port: number
   connectionString: string
+  listen: ResolvedPostgresListenOptions
   user?: string
   password?: string
 }): LocalPostgresEnv {
+  const host = listen.type === 'socket' ? listen.socketDir : listen.host
+
   return {
     PGDATA: dataDir,
     PGDATABASE: database,
     PGHOST: host,
-    PGPORT: String(port),
+    PGPORT: String(listen.port),
     DATABASE_URL: connectionString,
     ...(user === undefined
       ? {}
