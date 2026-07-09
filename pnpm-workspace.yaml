@@ -4,5 +4,6 @@ minimumReleaseAge: 10080
 minimumReleaseAgeExclude:
   - lildocs
   - exports-md
+  - octane
 allowBuilds:
   esbuild: true
