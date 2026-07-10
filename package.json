@@ -1,7 +1,7 @@
 {
   "name": "local-postgres",
   "version": "0.1.5",
-  "description": "Start and manage a local PostgreSQL server from Node.js using installed Postgres binaries.",
+  "description": "Start and manage local PostgreSQL servers from Node.js.",
   "license": "MIT OR Apache-2.0",
   "author": "Alec Larson",
   "repository": {
@@ -24,6 +24,11 @@
       "types": "./dist/core.d.mts",
       "import": "./dist/core.mjs",
       "default": "./dist/core.mjs"
+    },
+    "./tmp": {
+      "types": "./dist/tmp.d.mts",
+      "import": "./dist/tmp.mjs",
+      "default": "./dist/tmp.mjs"
     }
   },
   "scripts": {

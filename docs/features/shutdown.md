@@ -60,6 +60,20 @@ await stopPostgresDataDir({
 })
 ```
 
+Delayed cleanup jobs should capture the original server PID and pass it as
+`expectedPid`:
+
+```ts
+await stopPostgresDataDir({
+  dataDir: '.postgres',
+  expectedPid: postgres.pid,
+})
+```
+
+If `postmaster.pid` identifies a different process, the call returns without
+signaling it. This prevents an older job from stopping a newer server that
+reused the same data directory.
+
 | Mode        | PostgreSQL signal | Intent                                                     |
 | ----------- | ----------------- | ---------------------------------------------------------- |
 | `smart`     | `SIGTERM`         | Wait for clients to disconnect.                            |

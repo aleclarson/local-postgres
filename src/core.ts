@@ -315,6 +315,7 @@ export async function stopPostgresDataDir(options: StopPostgresDataDirOptions): 
 
   const pid = await readPostmasterPid(dataDir)
   if (pid === undefined) return
+  if (options.expectedPid !== undefined && pid !== options.expectedPid) return
 
   logger.info(`[postgres] Stopping server for ${dataDir}...`)
   try {

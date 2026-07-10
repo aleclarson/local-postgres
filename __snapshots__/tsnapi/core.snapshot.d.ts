@@ -66,6 +66,7 @@ export interface StartPostgresDataDirOptions {
 }
 export interface StopPostgresDataDirOptions {
   dataDir: string;
+  expectedPid?: number;
   listen?: PostgresListenOptions;
   mode?: 'smart' | 'fast' | 'immediate';
   waitForIdle?: boolean | {

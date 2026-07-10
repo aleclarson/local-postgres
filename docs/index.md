@@ -20,6 +20,7 @@ developer tooling. It is not a production process manager.
 | Understand a package capability           | [Data Directories](features/data-directories.md)           |
 | Set up a persistent development cluster   | [Local Development](guides/local-development.md)           |
 | Build an isolated test fixture            | [Test Fixtures](guides/test-fixtures.md)                   |
+| Start an automatically cleaned-up server  | [Temporary Databases](guides/temporary-databases.md)       |
 | Run a CLI against the server              | [Child Processes](guides/child-processes.md)               |
 | Diagnose a failure                        | [Troubleshooting](troubleshooting/index.md)                |
 | Look up every option and returned field   | Generated API documentation from the exported public types |
@@ -52,6 +53,11 @@ developer tooling. It is not a production process manager.
 The returned environment values are plain data. `local-postgres` does not mutate
 `process.env` for you.
 
+The opt-in `local-postgres/tmp` entry point additionally owns an isolated
+temporary container and its cleanup policy. See
+[Temporary Databases](guides/temporary-databases.md) when that lifecycle fits
+the caller better than a stable data directory.
+
 ```ts
 import { startPostgres } from 'local-postgres'
 
@@ -78,7 +84,7 @@ caller:
 - migrations, schema creation, and seed data
 - test runner hooks and teardown policy
 - framework-specific environment injection
-- data directory cleanup
+- data directory cleanup when using the root or core entry points
 - production service supervision
 - backups, replication, access control hardening, or remote hosting
 

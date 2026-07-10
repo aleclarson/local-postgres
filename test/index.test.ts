@@ -871,6 +871,23 @@ test('core stops a data directory from postmaster.pid', async () => {
   expect(killSignals).toEqual(['SIGTERM', 0])
 })
 
+test('core does not stop a reused data directory when the expected pid changed', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'postmaster.pid'), ['98765', dataDir, Date.now()].join('\n'))
+
+  const killMock = vi.spyOn(process, 'kill')
+  const { stopPostgresDataDir } = await loadSubject()
+
+  await stopPostgresDataDir({
+    dataDir,
+    expectedPid: 12345,
+  })
+
+  expect(killMock).not.toHaveBeenCalled()
+})
+
 function defaultExecFile(command: string, args: string[]): ExecFileResult {
   if (args[0] === '--version' && command.includes('postgres')) {
     return { stdout: 'postgres (PostgreSQL) 18.4' }

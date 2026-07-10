@@ -233,6 +233,11 @@ export interface LocalPostgresProcess {
 export interface StopPostgresDataDirOptions {
   /** Actual Postgres cluster directory that contains `postmaster.pid`. */
   dataDir: string
+  /**
+   * Stop only when `postmaster.pid` still identifies this process. This keeps
+   * delayed cleanup jobs from stopping a newer server that reused the directory.
+   */
+  expectedPid?: number
   /** Listen configuration used when waiting for idle connections. */
   listen?: PostgresListenOptions
   /** PostgreSQL shutdown mode. Defaults to `fast`. */
