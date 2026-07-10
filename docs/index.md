@@ -14,13 +14,27 @@ developer tooling. It is not a production process manager.
 
 ## Start Here
 
-| Task                                                   | Page                                               |
-| ------------------------------------------------------ | -------------------------------------------------- |
-| Install Postgres and start a first server              | [Getting Started](getting-started.md)              |
-| Reuse a server in tests, CLIs, or dev tools            | [Lifecycle Patterns](guides/lifecycle-patterns.md) |
-| Choose local binaries or managed downloads             | [Postgres Binaries](guides/postgres-binaries.md)   |
-| Look up every option and returned field                | Generated API docs from public TSDoc               |
-| Diagnose startup, port, version, and download failures | [Troubleshooting](troubleshooting.md)              |
+| Task                                      | Page                                                       |
+| ----------------------------------------- | ---------------------------------------------------------- |
+| Install Postgres and start a first server | [Getting Started](getting-started.md)                      |
+| Understand a package capability           | [Data Directories](features/data-directories.md)           |
+| Set up a persistent development cluster   | [Local Development](guides/local-development.md)           |
+| Build an isolated test fixture            | [Test Fixtures](guides/test-fixtures.md)                   |
+| Run a CLI against the server              | [Child Processes](guides/child-processes.md)               |
+| Diagnose a failure                        | [Troubleshooting](troubleshooting/index.md)                |
+| Look up every option and returned field   | Generated API documentation from the exported public types |
+
+## Features
+
+| Decision                                      | Page                                                   |
+| --------------------------------------------- | ------------------------------------------------------ |
+| Initialize, reuse, or configure cluster state | [Data Directories](features/data-directories.md)       |
+| Select local or managed Postgres binaries     | [Postgres Binaries](features/postgres-binaries.md)     |
+| Choose TCP, a fixed port, or a Unix socket    | [Listeners](features/listeners.md)                     |
+| Create a database or development superuser    | [Databases and Roles](features/databases-and-roles.md) |
+| Keep output quiet or retain diagnostics       | [Logging](features/logging.md)                         |
+| Choose process ownership and shutdown policy  | [Shutdown](features/shutdown.md)                       |
+| Compose the lower-level lifecycle operations  | [Core Lifecycle API](features/core-lifecycle-api.md)   |
 
 ## What It Manages
 

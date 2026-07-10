@@ -24,7 +24,7 @@ initdb --version
 ```
 
 If either command is missing, install PostgreSQL or use managed binaries as
-described in [Postgres Binaries](guides/postgres-binaries.md).
+described in [Postgres Binaries](features/postgres-binaries.md).
 
 ## Install
 
@@ -90,7 +90,8 @@ const postgres = await startPostgres({
 ```
 
 If the fixed port is already taken, `startPostgres` rejects before it initializes
-or starts a server.
+or starts a server. See [Listeners](features/listeners.md) for TCP, fixed-port,
+and Unix socket choices.
 
 ## Connect a Client
 
@@ -135,3 +136,9 @@ const child = spawn('pnpm', ['run', 'migrate'], {
 
 The object includes `DATABASE_URL`, `PGHOST`, `PGPORT`, `PGDATABASE`, and
 `PGDATA`. It includes `PGUSER` and `PGPASSWORD` when `superuser` is set.
+
+Next, choose the workflow that owns the server:
+
+- [Local Development](guides/local-development.md) for reusable state
+- [Test Fixtures](guides/test-fixtures.md) for isolated disposable state
+- [Child Processes](guides/child-processes.md) for migrations and other CLIs

@@ -40,13 +40,14 @@ values without mutating `process.env`.
 
 ## Documentation
 
-| Task                                                   | Page                                                    |
-| ------------------------------------------------------ | ------------------------------------------------------- |
-| Install Postgres and start a first server              | [Getting Started](docs/getting-started.md)              |
-| Reuse a server in tests, CLIs, or dev tools            | [Lifecycle Patterns](docs/guides/lifecycle-patterns.md) |
-| Choose local binaries or managed downloads             | [Postgres Binaries](docs/guides/postgres-binaries.md)   |
-| Look up every option and returned field                | Generated API docs from public TSDoc                    |
-| Diagnose startup, port, version, and download failures | [Troubleshooting](docs/troubleshooting.md)              |
+| Task                                      | Page                                                       |
+| ----------------------------------------- | ---------------------------------------------------------- |
+| Install Postgres and start a first server | [Getting Started](docs/getting-started.md)                 |
+| Understand a package capability           | [Features](docs/features/data-directories.md)              |
+| Set up local development or tests         | [Guides](docs/guides/local-development.md)                 |
+| Choose local binaries or downloads        | [Postgres Binaries](docs/features/postgres-binaries.md)    |
+| Diagnose a failure                        | [Troubleshooting](docs/troubleshooting/index.md)           |
+| Look up every option and returned field   | Generated API documentation from the exported public types |
 
 ## Scope
 
