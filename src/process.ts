@@ -1,8 +1,10 @@
-import { execFile, type StdioOptions } from 'node:child_process'
+import { execFile, type ChildProcess, type StdioOptions } from 'node:child_process'
 import { appendFileSync, closeSync, mkdirSync, openSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { LocalPostgresError, type LocalPostgresLogTarget } from './types'
+
+const MAX_CAPTURED_POSTGRES_OUTPUT_BYTES = 64 * 1024
 
 type CommandFailure = Error & {
   code?: number | string
@@ -23,12 +25,73 @@ export interface ExitResult {
 
 export function openLogTarget(log: LocalPostgresLogTarget | undefined): {
   stdio: StdioOptions
+  attach(process: ChildProcess): void
+  diagnostics(): string | undefined
+  finishStartup(): void
   close(): void
 } {
   if (log === 'inherit') {
     return {
       stdio: ['ignore', 'inherit', 'inherit'],
+      attach: noop,
+      diagnostics: () => undefined,
+      finishStartup: noop,
       close: noop,
+    }
+  }
+
+  if (log === 'on-error') {
+    let chunks: Buffer[] = []
+    let byteLength = 0
+    let child: ChildProcess | undefined
+    let capturing = true
+
+    const capture = (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      chunks.push(buffer)
+      byteLength += buffer.byteLength
+
+      while (byteLength > MAX_CAPTURED_POSTGRES_OUTPUT_BYTES && chunks.length > 0) {
+        const overflow = byteLength - MAX_CAPTURED_POSTGRES_OUTPUT_BYTES
+        const first = chunks[0]!
+        if (first.byteLength <= overflow) {
+          chunks.shift()
+          byteLength -= first.byteLength
+        } else {
+          chunks[0] = first.subarray(overflow)
+          byteLength -= overflow
+        }
+      }
+    }
+
+    const stopCapturing = () => {
+      if (!capturing) return
+      capturing = false
+      child?.stdout?.off('data', capture)
+      child?.stderr?.off('data', capture)
+      // A piped child must keep being drained after startup or verbose servers
+      // can block once the operating system pipe fills.
+      child?.stdout?.resume()
+      child?.stderr?.resume()
+    }
+
+    return {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      attach: (process) => {
+        child = process
+        process.stdout?.on('data', capture)
+        process.stderr?.on('data', capture)
+      },
+      diagnostics: () => {
+        if (byteLength === 0) return undefined
+        return Buffer.concat(chunks, byteLength).toString('utf8').trim() || undefined
+      },
+      finishStartup: () => {
+        stopCapturing()
+        chunks = []
+        byteLength = 0
+      },
+      close: stopCapturing,
     }
   }
 
@@ -38,6 +101,9 @@ export function openLogTarget(log: LocalPostgresLogTarget | undefined): {
     let closed = false
     return {
       stdio: ['ignore', fd, fd],
+      attach: noop,
+      diagnostics: () => undefined,
+      finishStartup: noop,
       close: () => {
         if (closed) return
         closed = true
@@ -48,6 +114,9 @@ export function openLogTarget(log: LocalPostgresLogTarget | undefined): {
 
   return {
     stdio: ['ignore', 'ignore', 'ignore'],
+    attach: noop,
+    diagnostics: () => undefined,
+    finishStartup: noop,
     close: noop,
   }
 }
@@ -92,7 +161,7 @@ function writeCommandOutput(
   log: LocalPostgresLogTarget | undefined,
   { stderr, stdout }: CommandResult,
 ) {
-  if (!log || log === 'ignore') return
+  if (!log || log === 'ignore' || log === 'on-error') return
 
   if (log === 'inherit') {
     if (stdout) process.stdout.write(stdout)

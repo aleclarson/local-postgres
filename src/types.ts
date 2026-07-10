@@ -29,11 +29,14 @@ export interface LocalPostgresSuperuser {
 }
 
 /**
- * Destination for Postgres process stdout and stderr.
+ * Destination for Postgres process stdout and stderr. `on-error` keeps a
+ * bounded in-memory tail quiet during successful startup and adds it to a
+ * `LocalPostgresError` when startup fails.
  */
 export type LocalPostgresLogTarget =
   | 'ignore'
   | 'inherit'
+  | 'on-error'
   | {
       /** File path that receives appended Postgres stdout and stderr output. */
       filePath: string
@@ -332,7 +335,9 @@ export interface StartPostgresOptions {
   /**
    * Where Postgres stdout/stderr should go.
    *
-   * Defaults to `ignore`. File targets create parent directories when needed.
+   * Defaults to `ignore`. Use `on-error` for quiet successful startup with
+   * captured failure diagnostics. File targets create parent directories when
+   * needed.
    */
   log?: LocalPostgresLogTarget
   /**
@@ -420,8 +425,32 @@ export interface LocalPostgresServer {
  * Error type used for operational failures reported by `local-postgres`.
  */
 export class LocalPostgresError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options)
+  /** Bounded Postgres process output captured while an operation was failing. */
+  readonly diagnostics?: string
+
+  constructor(message: string, options?: ErrorOptions & { diagnostics?: string }) {
+    super(
+      options?.diagnostics
+        ? `${message}\n\nPostgres diagnostics:\n${options.diagnostics}`
+        : message,
+      options,
+    )
     this.name = 'LocalPostgresError'
+    this.diagnostics = options?.diagnostics
+  }
+}
+
+/**
+ * Indicates that a data directory's `postmaster.pid` belongs to a live process.
+ */
+export class PostgresDataDirInUseError extends LocalPostgresError {
+  readonly dataDir: string
+  readonly pid: number
+
+  constructor(dataDir: string, pid: number) {
+    super(`Postgres data directory "${dataDir}" is already in use by process ${pid}.`)
+    this.name = 'PostgresDataDirInUseError'
+    this.dataDir = dataDir
+    this.pid = pid
   }
 }

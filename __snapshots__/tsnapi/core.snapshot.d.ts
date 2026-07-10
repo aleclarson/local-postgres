@@ -88,7 +88,7 @@ export interface WaitForPostgresReadyOptions {
 // #endregion
 
 // #region Types
-export type LocalPostgresLogTarget = 'ignore' | 'inherit' | {
+export type LocalPostgresLogTarget = 'ignore' | 'inherit' | 'on-error' | {
   filePath: string;
 };
 export type PostgresBinaryStrategy = 'local-only' | 'prefer-local' | 'prefer-download' | 'download-only';
@@ -115,7 +115,15 @@ export type ResolvedPostgresListenOptions = {
 
 // #region Classes
 export declare class LocalPostgresError extends Error {
-  constructor(_: string, _?: ErrorOptions);
+  readonly diagnostics?: string;
+  constructor(_: string, _?: ErrorOptions & {
+    diagnostics?: string;
+  });
+}
+export declare class PostgresDataDirInUseError extends LocalPostgresError {
+  readonly dataDir: string;
+  readonly pid: number;
+  constructor(_: string, _: number);
 }
 // #endregion
 

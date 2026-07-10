@@ -19,6 +19,22 @@ try {
 }
 ```
 
+For quiet tools and test runners, set `log: 'on-error'` so startup failures
+carry a bounded tail of Postgres output without printing successful startup:
+
+```ts
+import { LocalPostgresError, startPostgres } from 'local-postgres'
+
+try {
+  await startPostgres({ dataDir: '.postgres', log: 'on-error' })
+} catch (error) {
+  if (error instanceof LocalPostgresError) {
+    console.error(error.diagnostics)
+  }
+  throw error
+}
+```
+
 ## `"initdb" binary was not found on PATH`
 
 `local-postgres` needs `initdb` when `dataDir` does not contain a `PG_VERSION`
@@ -102,7 +118,19 @@ console.log(postgres.port)
 Postgres was spawned, but `local-postgres` could not connect before
 `readinessTimeoutMs`.
 
-Verify the server log by writing Postgres output to a file:
+First capture startup diagnostics without enabling successful-run output:
+
+```ts
+await startPostgres({
+  dataDir: '.postgres',
+  log: 'on-error',
+  readinessTimeoutMs: 10_000,
+})
+```
+
+The thrown `LocalPostgresError` includes the captured output in its message and
+`diagnostics` property. To retain output after startup too, write Postgres
+output to a file:
 
 ```ts
 await startPostgres({
@@ -117,6 +145,38 @@ await startPostgres({
 Fix depends on the log. Common causes are a slow first initialization, invalid
 data directory state, filesystem permissions, or a host/port that the local
 server cannot bind.
+
+## `Postgres data directory ... is already in use`
+
+`postmaster.pid` names a process that is still alive. `local-postgres` rejects
+with `PostgresDataDirInUseError` before spawning another server and does not
+attach to, signal, or take ownership of the existing process.
+
+Use the structured fields to report which cluster blocks startup:
+
+```ts
+import { PostgresDataDirInUseError, startPostgres } from 'local-postgres'
+
+try {
+  await startPostgres({ dataDir: '.postgres', log: 'on-error' })
+} catch (error) {
+  if (error instanceof PostgresDataDirInUseError) {
+    console.error(`Cluster ${error.dataDir} is already running as PID ${error.pid}`)
+  }
+  throw error
+}
+```
+
+Verify the process before deciding whether to stop it:
+
+```sh
+ps -p "$(head -n 1 .postgres/postmaster.pid)" -o pid=,command=
+```
+
+If the PID is stale because no such process exists, `local-postgres` lets
+Postgres perform its normal stale-lock handling. A process can also win the
+startup race after the preflight check; use `log: 'on-error'` so PostgreSQL's
+lock-file error remains visible in that case.
 
 ## Data Directory Version Mismatch
 

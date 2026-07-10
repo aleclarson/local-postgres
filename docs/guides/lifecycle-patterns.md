@@ -122,8 +122,24 @@ command everything it needs to connect.
 
 ## Logging
 
-Postgres stdout and stderr are ignored by default. Use a file when startup or
-query errors need inspection after a failed run:
+Postgres stdout and stderr are ignored by default. Developer tools that should
+stay quiet when startup succeeds can retain a bounded diagnostic tail only for
+startup failures:
+
+```ts
+const postgres = await startPostgres({
+  dataDir: '.postgres',
+  log: 'on-error',
+})
+```
+
+`on-error` keeps the newest 64 KiB of combined Postgres stdout and stderr in
+memory during startup. If startup fails, `LocalPostgresError.diagnostics`
+contains that output and the error message prints it under `Postgres
+diagnostics:`. The buffer is discarded after successful readiness.
+
+Use a file when output from the whole server lifetime needs inspection after a
+run:
 
 ```ts
 const postgres = await startPostgres({
@@ -143,6 +159,7 @@ const postgres = await startPostgres({
 })
 ```
 
+`ignore`, `inherit`, and file targets retain their existing behavior.
 `local-postgres` creates the log file parent directory when needed.
 
 ## Shutdown

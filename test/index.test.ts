@@ -29,6 +29,8 @@ type QueryHandler = (
 class FakeChildProcess extends EventEmitter {
   pid = 12_345
   signals: Array<NodeJS.Signals | number | undefined> = []
+  stdout = new PassThrough()
+  stderr = new PassThrough()
 
   kill(signal?: NodeJS.Signals | number) {
     this.signals.push(signal)
@@ -207,6 +209,8 @@ async function loadSubject({
     startPostgresDataDir: core.startPostgresDataDir,
     stopPostgresDataDir: core.stopPostgresDataDir,
     DEFAULT_POSTGRES_CACHE_DIR: subject.DEFAULT_POSTGRES_CACHE_DIR,
+    LocalPostgresError: subject.LocalPostgresError,
+    PostgresDataDirInUseError: subject.PostgresDataDirInUseError,
     unpackTarMock,
   }
 }
@@ -661,6 +665,155 @@ test('core starts a data directory in socket mode', async () => {
   await server.stop()
 
   expect(child.signals).toEqual(['SIGINT'])
+})
+
+test('captures Postgres output without emitting it when startup succeeds', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
+  const { child, spawnMock, startPostgresDataDir } = await loadSubject()
+  const startup = startPostgresDataDir({
+    dataDir,
+    log: 'on-error',
+    stopTimeoutMs: 1,
+  })
+
+  await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+  child.stderr.write('normal startup detail\n')
+  const server = await startup
+
+  expect(spawnMock.mock.calls[0]?.[2]).toMatchObject({
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  await server.stop()
+})
+
+test('includes bounded Postgres diagnostics when the process exits before readiness', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
+  const { child, LocalPostgresError, spawnMock, startPostgresDataDir } = await loadSubject({
+    pgQuery: () => {
+      throw new Error('not ready')
+    },
+  })
+  const startup = startPostgresDataDir({
+    dataDir,
+    log: 'on-error',
+    readinessIntervalMs: 0,
+    stopTimeoutMs: 1,
+  })
+
+  await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+  child.stdout.write('x'.repeat(70 * 1024))
+  child.stderr.write('FATAL: lock file "postmaster.pid" already exists\n')
+  child.emit('exit', 1, null)
+
+  const error = await startup.catch((error: unknown) => error)
+  expect(error).toBeInstanceOf(LocalPostgresError)
+  if (!(error instanceof LocalPostgresError)) throw error
+  expect(error).toMatchObject({
+    diagnostics: expect.stringContaining('FATAL: lock file "postmaster.pid" already exists'),
+  })
+  expect(error.message).toContain('Postgres diagnostics:')
+  expect(Buffer.byteLength(error.diagnostics!)).toBeLessThanOrEqual(64 * 1024)
+})
+
+test('includes captured diagnostics when Postgres readiness times out', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
+  const { child, spawnMock, startPostgresDataDir } = await loadSubject({
+    pgQuery: () => {
+      throw new Error('not ready')
+    },
+  })
+  const startup = startPostgresDataDir({
+    dataDir,
+    log: 'on-error',
+    readinessIntervalMs: 5,
+    readinessTimeoutMs: 100,
+    stopTimeoutMs: 1,
+  })
+  const startupError = startup.catch((error: unknown) => error)
+
+  await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+  child.stderr.write('FATAL: could not bind address\n')
+
+  await expect(startupError).resolves.toMatchObject({
+    diagnostics: 'FATAL: could not bind address',
+    message: expect.stringContaining('Timed out'),
+  })
+})
+
+test('includes captured diagnostics when the Postgres process cannot spawn', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
+  const { child, spawnMock, startPostgresDataDir } = await loadSubject({
+    pgQuery: () => {
+      throw new Error('not ready')
+    },
+  })
+  const startup = startPostgresDataDir({
+    dataDir,
+    log: 'on-error',
+    readinessIntervalMs: 0,
+    stopTimeoutMs: 1,
+  })
+  const startupError = startup.catch((error: unknown) => error)
+
+  await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+  child.stderr.write('launcher diagnostic\n')
+  child.emit('error', Object.assign(new Error('spawn postgres ENOENT'), { code: 'ENOENT' }))
+
+  await expect(startupError).resolves.toMatchObject({
+    diagnostics: 'launcher diagnostic',
+    message: expect.stringContaining('Failed to start the "postgres" process'),
+  })
+})
+
+test('rejects with a structured error when postmaster.pid points to a live process', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+  await writeFile(join(dataDir, 'postmaster.pid'), '98765\n')
+  vi.spyOn(process, 'kill').mockReturnValue(true)
+
+  const { PostgresDataDirInUseError, spawnMock, startPostgresDataDir } = await loadSubject()
+  const error = await startPostgresDataDir({ dataDir }).catch((error: unknown) => error)
+
+  expect(error).toBeInstanceOf(PostgresDataDirInUseError)
+  if (!(error instanceof PostgresDataDirInUseError)) throw error
+  expect(error).toMatchObject({ dataDir, pid: 98_765 })
+  expect(spawnMock).not.toHaveBeenCalled()
+})
+
+test('does not treat a stale postmaster.pid as a running cluster', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+  await writeFile(join(dataDir, 'postmaster.pid'), '98765\n')
+  vi.spyOn(process, 'kill').mockImplementation(() => {
+    throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+  })
+
+  const { spawnMock, startPostgresDataDir } = await loadSubject()
+  const server = await startPostgresDataDir({ dataDir, stopTimeoutMs: 1 })
+
+  expect(spawnMock).toHaveBeenCalledOnce()
+  await server.stop()
 })
 
 test('core ensures a database over a socket connection', async () => {

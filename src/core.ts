@@ -22,6 +22,7 @@ import {
 } from './process'
 import {
   LocalPostgresError,
+  PostgresDataDirInUseError,
   type EnsurePostgresDatabaseOptions,
   type InitPostgresDataDirOptions,
   type InitPostgresDataDirResult,
@@ -35,7 +36,7 @@ import {
 } from './types'
 
 export { resolvePostgresBinaries } from './binaries'
-export { DEFAULT_POSTGRES_CACHE_DIR, LocalPostgresError } from './types'
+export { DEFAULT_POSTGRES_CACHE_DIR, LocalPostgresError, PostgresDataDirInUseError } from './types'
 export type {
   EnsurePostgresDatabaseOptions,
   InitPostgresDataDirOptions,
@@ -167,6 +168,7 @@ export async function startPostgresDataDir(
   const readinessTimeoutMs = options.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS
   const readinessIntervalMs = options.readinessIntervalMs ?? DEFAULT_READINESS_INTERVAL_MS
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS
+  await assertDataDirectoryNotInUse(dataDir)
   const listen = await resolveListenOptions(options.listen, {
     checkTcpPort: true,
     tcpPort: 'findAvailable',
@@ -203,6 +205,7 @@ export async function startPostgresDataDir(
   const proc = spawn(binaries.postgres, args, {
     stdio: logFile.stdio,
   })
+  logFile.attach(proc)
 
   const exitPromise = new Promise<ExitResult>((resolve) => {
     proc.once('exit', (code, signal) => {
@@ -244,9 +247,23 @@ export async function startPostgresDataDir(
       intervalMs: readinessIntervalMs,
     })
     ready = true
+    logFile.finishStartup()
   } catch (error) {
     await stop()
-    throw error
+    const diagnostics = logFile.diagnostics()
+    if (!diagnostics) throw error
+
+    if (error instanceof LocalPostgresError) {
+      throw new LocalPostgresError(error.message, {
+        cause: error.cause ?? error,
+        diagnostics,
+      })
+    }
+
+    throw new LocalPostgresError('Failed to start Postgres.', {
+      cause: error,
+      diagnostics,
+    })
   }
 
   logger.info(`[postgres] Server ready on ${listenLabel(listen)}.`)
@@ -390,6 +407,13 @@ async function readPostmasterPid(dataDir: string) {
   }
 }
 
+async function assertDataDirectoryNotInUse(dataDir: string) {
+  const pid = await readPostmasterPid(dataDir)
+  if (pid !== undefined && isProcessRunning(pid)) {
+    throw new PostgresDataDirInUseError(dataDir, pid)
+  }
+}
+
 async function waitForPostmasterExit({
   dataDir,
   pid,
@@ -427,6 +451,7 @@ function isProcessRunning(pid: number) {
     return true
   } catch (error) {
     if (isNoSuchProcessError(error)) return false
+    if (isPermissionError(error)) return true
     throw error
   }
 }
@@ -437,6 +462,10 @@ function isNotFoundError(error: unknown) {
 
 function isNoSuchProcessError(error: unknown) {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH'
+}
+
+function isPermissionError(error: unknown) {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EPERM'
 }
 
 function resolveLogger(logger?: Partial<LocalPostgresLogger>): LocalPostgresLogger {

@@ -3,6 +3,12 @@
  */
 // #region Classes
 export class LocalPostgresError extends Error {
+  diagnostics
+  constructor(_, _) {}
+}
+export class PostgresDataDirInUseError extends LocalPostgresError {
+  dataDir
+  pid
   constructor(_, _) {}
 }
 // #endregion
