@@ -2,6 +2,7 @@
   "name": "local-postgres",
   "version": "0.2.0",
   "description": "Start and manage local PostgreSQL servers from Node.js.",
+  "homepage": "https://aleclarson.github.io/local-postgres/",
   "license": "MIT OR Apache-2.0",
   "author": "Alec Larson",
   "repository": {
