@@ -17,6 +17,7 @@ developer tooling. It is not a production process manager.
 | Task                                      | Page                                                       |
 | ----------------------------------------- | ---------------------------------------------------------- |
 | Install Postgres and start a first server | [Getting Started](getting-started.md)                      |
+| Choose between native Postgres and PGlite | [local-postgres or PGlite?](pglite.md)                     |
 | Understand a package capability           | [Data Directories](features/data-directories.md)           |
 | Set up a persistent development cluster   | [Local Development](guides/local-development.md)           |
 | Build an isolated test fixture            | [Test Fixtures](guides/test-fixtures.md)                   |
