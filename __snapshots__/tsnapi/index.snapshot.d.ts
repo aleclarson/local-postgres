@@ -48,7 +48,7 @@ export interface StartPostgresOptions {
   listen?: PostgresListenOptions;
   config?: Record<string, PostgresConfigValue>;
   superuser?: LocalPostgresSuperuser;
-  log?: LocalPostgresLogTarget;
+  postgresOutput?: PostgresOutputTarget;
   postgres?: PostgresBinaryOptions;
   logger?: Partial<LocalPostgresLogger>;
   readinessTimeoutMs?: number;
@@ -58,9 +58,6 @@ export interface StartPostgresOptions {
 // #endregion
 
 // #region Types
-export type LocalPostgresLogTarget = 'ignore' | 'inherit' | 'on-error' | {
-  filePath: string;
-};
 export type PostgresBinaryStrategy = 'local-only' | 'prefer-local' | 'prefer-download' | 'download-only';
 export type PostgresConfigValue = string | number | boolean;
 export type PostgresListenOptions = {
@@ -72,6 +69,9 @@ export type PostgresListenOptions = {
   socketDir: string;
   port?: number;
 };
+export type PostgresOutputTarget = 'ignore' | 'inherit' | 'on-error' | {
+  filePath: string;
+} | Writable;
 export type ResolvedPostgresListenOptions = {
   type: 'tcp';
   host: string;

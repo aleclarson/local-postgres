@@ -32,7 +32,7 @@ const dataDir = await mkdtemp(join(tmpdir(), 'app-postgres-'))
 const postgres = await startPostgres({
   dataDir,
   database: 'app_test',
-  log: 'on-error',
+  postgresOutput: 'on-error',
 })
 
 try {

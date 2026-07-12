@@ -243,7 +243,7 @@ test('initializes a cluster, starts local postgres, and returns connection detai
       name: 'app',
       password: 'secret',
     },
-    log: {
+    postgresOutput: {
       filePath: logFile,
     },
     stopTimeoutMs: 1,
@@ -676,7 +676,7 @@ test('captures Postgres output without emitting it when startup succeeds', async
   const { child, spawnMock, startPostgresDataDir } = await loadSubject()
   const startup = startPostgresDataDir({
     dataDir,
-    log: 'on-error',
+    postgresOutput: 'on-error',
     stopTimeoutMs: 1,
   })
 
@@ -689,6 +689,38 @@ test('captures Postgres output without emitting it when startup succeeds', async
   })
 
   await server.stop()
+})
+
+test('streams Postgres stdout and stderr without taking ownership of the target', async () => {
+  const root = await tempPath()
+  const dataDir = join(root, 'data')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
+  const output = new PassThrough()
+  const chunks: Buffer[] = []
+  output.on('data', (chunk: Buffer) => chunks.push(chunk))
+  const endSpy = vi.spyOn(output, 'end')
+  const destroySpy = vi.spyOn(output, 'destroy')
+  const { child, spawnMock, startPostgresDataDir } = await loadSubject()
+  const startup = startPostgresDataDir({
+    dataDir,
+    postgresOutput: output,
+    stopTimeoutMs: 1,
+  })
+
+  await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+  child.stdout.write('server stdout\n')
+  child.stderr.write('server stderr\n')
+  const server = await startup
+  child.stderr.write('after readiness\n')
+  await server.stop()
+
+  expect(Buffer.concat(chunks).toString('utf8')).toBe(
+    'server stdout\nserver stderr\nafter readiness\n',
+  )
+  expect(endSpy).not.toHaveBeenCalled()
+  expect(destroySpy).not.toHaveBeenCalled()
 })
 
 test('includes bounded Postgres diagnostics when the process exits before readiness', async () => {
@@ -704,7 +736,7 @@ test('includes bounded Postgres diagnostics when the process exits before readin
   })
   const startup = startPostgresDataDir({
     dataDir,
-    log: 'on-error',
+    postgresOutput: 'on-error',
     readinessIntervalMs: 0,
     stopTimeoutMs: 1,
   })
@@ -737,7 +769,7 @@ test('includes captured diagnostics when Postgres readiness times out', async ()
   })
   const startup = startPostgresDataDir({
     dataDir,
-    log: 'on-error',
+    postgresOutput: 'on-error',
     readinessIntervalMs: 5,
     readinessTimeoutMs: 100,
     stopTimeoutMs: 1,
@@ -766,7 +798,7 @@ test('includes captured diagnostics when the Postgres process cannot spawn', asy
   })
   const startup = startPostgresDataDir({
     dataDir,
-    log: 'on-error',
+    postgresOutput: 'on-error',
     readinessIntervalMs: 0,
     stopTimeoutMs: 1,
   })

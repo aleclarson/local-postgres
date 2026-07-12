@@ -3,7 +3,7 @@ export { DEFAULT_POSTGRES_CACHE_DIR, LocalPostgresError, PostgresDataDirInUseErr
 export type {
   LocalPostgresEnv,
   LocalPostgresLogger,
-  LocalPostgresLogTarget,
+  PostgresOutputTarget,
   LocalPostgresServer,
   LocalPostgresSuperuser,
   PostgresBinaryOptions,

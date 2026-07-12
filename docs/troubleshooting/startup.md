@@ -13,7 +13,7 @@ import { LocalPostgresError, startPostgres } from 'local-postgres'
 try {
   await startPostgres({
     dataDir: '.postgres',
-    log: 'on-error',
+    postgresOutput: 'on-error',
   })
 } catch (error) {
   if (error instanceof LocalPostgresError) {
@@ -63,7 +63,7 @@ PostgreSQL remained alive, but the readiness connection did not succeed before
 ```ts
 await startPostgres({
   dataDir: '.postgres',
-  log: 'on-error',
+  postgresOutput: 'on-error',
   readinessTimeoutMs: 10_000,
 })
 ```

@@ -17,7 +17,7 @@ const postgres = await startPostgres({
     name: 'app',
     password: 'postgres',
   },
-  log: 'on-error',
+  postgresOutput: 'on-error',
 })
 
 try {
@@ -38,7 +38,7 @@ Use `await using` when the runtime supports explicit resource management:
 await using postgres = await startPostgres({
   dataDir: '.postgres',
   database: 'app_dev',
-  log: 'on-error',
+  postgresOutput: 'on-error',
 })
 
 Object.assign(process.env, postgres.env)

@@ -133,7 +133,7 @@ export async function start(options: StartOptions = {}): Promise<PgTmp> {
     dataDir,
     listen,
     postgresOptions: splitPostgresOptions(options.postgresOptions ?? ''),
-    log: { filePath: path.join(dataDir, 'postgres.log') },
+    postgresOutput: { filePath: path.join(dataDir, 'postgres.log') },
   })
 
   try {
@@ -227,7 +227,7 @@ async function initializeDataDirectory(
     },
     dataDir,
     encoding: 'UNICODE',
-    log: options.stdio === 'inherit' ? 'inherit' : undefined,
+    initdbOutput: options.stdio === 'inherit' ? 'inherit' : undefined,
     noSync: true,
     postgres: options.postgres,
   })

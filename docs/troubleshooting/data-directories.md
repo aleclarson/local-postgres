@@ -13,7 +13,7 @@ attach to, signal, or take ownership of it:
 import { PostgresDataDirInUseError, startPostgres } from 'local-postgres'
 
 try {
-  await startPostgres({ dataDir: '.postgres', log: 'on-error' })
+  await startPostgres({ dataDir: '.postgres', postgresOutput: 'on-error' })
 } catch (error) {
   if (error instanceof PostgresDataDirInUseError) {
     console.error(`Cluster ${error.dataDir} is already running as PID ${error.pid}`)
@@ -35,7 +35,7 @@ stop a server you own. Do not start a second server against the same directory.
 ## Stale `postmaster.pid`
 
 When the PID no longer exists, `local-postgres` lets PostgreSQL perform its
-normal stale-lock handling. If startup still fails, use `log: 'on-error'` and
+normal stale-lock handling. If startup still fails, use `postgresOutput: 'on-error'` and
 follow PostgreSQL's diagnostic instead of deleting the file blindly.
 
 An invalid PID file produces `Invalid postmaster.pid file`. Inspect the file

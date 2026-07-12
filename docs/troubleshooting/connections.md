@@ -44,7 +44,7 @@ await startPostgres({
     name: 'app',
     password: 'postgres',
   },
-  log: {
+  postgresOutput: {
     filePath: '.postgres/postgres.log',
   },
 })

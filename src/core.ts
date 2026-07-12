@@ -15,7 +15,7 @@ import { ensureDatabase, waitForIdleConnections, waitForReady } from './postgres
 import {
   commandError,
   delay,
-  openLogTarget,
+  openPostgresOutput,
   runCommand,
   waitForExit,
   type ExitResult,
@@ -41,12 +41,12 @@ export type {
   EnsurePostgresDatabaseOptions,
   InitPostgresDataDirOptions,
   InitPostgresDataDirResult,
-  LocalPostgresLogTarget,
   LocalPostgresLogger,
   LocalPostgresProcess,
   PostgresBinaryOptions,
   PostgresBinaryStrategy,
   PostgresConfigValue,
+  PostgresOutputTarget,
   PostgresListenOptions,
   ResolvedPostgresBinaries,
   ResolvedPostgresListenOptions,
@@ -139,7 +139,7 @@ export async function initPostgresDataDir(
 
   logger.info('[postgres] Initializing database cluster...')
   try {
-    await runCommand(binaries.initdb, args, { log: options.log })
+    await runCommand(binaries.initdb, args, { output: options.initdbOutput })
   } catch (error) {
     throw commandError('Failed to initialize the Postgres data directory.', 'initdb', error)
   }
@@ -190,7 +190,7 @@ export async function startPostgresDataDir(
   }
 
   logger.info(`[postgres] Starting server on ${listenLabel(listen)}...`)
-  const logFile = openLogTarget(options.log)
+  const postgresOutput = openPostgresOutput(options.postgresOutput)
   let stopped = false
   let ready = false
   let spawnError: Error | undefined
@@ -203,14 +203,14 @@ export async function startPostgresDataDir(
   args.push(...(options.postgresOptions ?? []))
 
   const proc = spawn(binaries.postgres, args, {
-    stdio: logFile.stdio,
+    stdio: postgresOutput.stdio,
   })
-  logFile.attach(proc)
+  postgresOutput.attach(proc)
 
   const exitPromise = new Promise<ExitResult>((resolve) => {
     proc.once('exit', (code, signal) => {
       exitResult = { code, signal }
-      logFile.close()
+      postgresOutput.close()
       if (ready && !stopped && code !== 0 && code !== null) {
         logger.error(`[postgres] Process exited unexpectedly with code ${code}.`)
       }
@@ -220,7 +220,7 @@ export async function startPostgresDataDir(
 
   proc.once('error', (error) => {
     spawnError = error
-    logFile.close()
+    postgresOutput.close()
   })
 
   const stop = async () => {
@@ -247,10 +247,10 @@ export async function startPostgresDataDir(
       intervalMs: readinessIntervalMs,
     })
     ready = true
-    logFile.finishStartup()
+    postgresOutput.finishStartup()
   } catch (error) {
     await stop()
-    const diagnostics = logFile.diagnostics()
+    const diagnostics = postgresOutput.diagnostics()
     if (!diagnostics) throw error
 
     if (error instanceof LocalPostgresError) {

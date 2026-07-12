@@ -2,7 +2,7 @@ import { execFile, type ChildProcess, type StdioOptions } from 'node:child_proce
 import { appendFileSync, closeSync, mkdirSync, openSync } from 'node:fs'
 import * as path from 'node:path'
 
-import { LocalPostgresError, type LocalPostgresLogTarget } from './types'
+import { LocalPostgresError, type PostgresOutputTarget } from './types'
 
 const MAX_CAPTURED_POSTGRES_OUTPUT_BYTES = 64 * 1024
 
@@ -23,14 +23,14 @@ export interface ExitResult {
   signal: NodeJS.Signals | null
 }
 
-export function openLogTarget(log: LocalPostgresLogTarget | undefined): {
+export function openPostgresOutput(output: PostgresOutputTarget | undefined): {
   stdio: StdioOptions
   attach(process: ChildProcess): void
   diagnostics(): string | undefined
   finishStartup(): void
   close(): void
 } {
-  if (log === 'inherit') {
+  if (output === 'inherit') {
     return {
       stdio: ['ignore', 'inherit', 'inherit'],
       attach: noop,
@@ -40,7 +40,7 @@ export function openLogTarget(log: LocalPostgresLogTarget | undefined): {
     }
   }
 
-  if (log === 'on-error') {
+  if (output === 'on-error') {
     let chunks: Buffer[] = []
     let byteLength = 0
     let child: ChildProcess | undefined
@@ -95,9 +95,9 @@ export function openLogTarget(log: LocalPostgresLogTarget | undefined): {
     }
   }
 
-  if (typeof log === 'object') {
-    mkdirSync(path.dirname(log.filePath), { recursive: true })
-    const fd = openSync(log.filePath, 'w')
+  if (typeof output === 'object' && 'filePath' in output) {
+    mkdirSync(path.dirname(output.filePath), { recursive: true })
+    const fd = openSync(output.filePath, 'w')
     let closed = false
     return {
       stdio: ['ignore', fd, fd],
@@ -109,6 +109,21 @@ export function openLogTarget(log: LocalPostgresLogTarget | undefined): {
         closed = true
         closeSync(fd)
       },
+    }
+  }
+
+  if (typeof output === 'object') {
+    return {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      attach: (process) => {
+        process.stdout?.pipe(output, { end: false })
+        process.stderr?.pipe(output, { end: false })
+      },
+      diagnostics: () => undefined,
+      finishStartup: noop,
+      // The readable sides unpipe themselves when they end. Closing the
+      // caller-owned destination here could discard final process output.
+      close: noop,
     }
   }
 
@@ -125,7 +140,7 @@ export function runCommand(
   command: string,
   args: string[],
   options: {
-    log?: LocalPostgresLogTarget
+    output?: PostgresOutputTarget
   } = {},
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
@@ -141,7 +156,7 @@ export function runCommand(
           stdout: stdout?.toString() ?? '',
           stderr: stderr?.toString() ?? '',
         }
-        writeCommandOutput(options.log, result)
+        writeCommandOutput(options.output, result)
 
         if (error) {
           const commandFailure = error as CommandFailure
@@ -158,20 +173,26 @@ export function runCommand(
 }
 
 function writeCommandOutput(
-  log: LocalPostgresLogTarget | undefined,
+  output: PostgresOutputTarget | undefined,
   { stderr, stdout }: CommandResult,
 ) {
-  if (!log || log === 'ignore' || log === 'on-error') return
+  if (!output || output === 'ignore' || output === 'on-error') return
 
-  if (log === 'inherit') {
+  if (output === 'inherit') {
     if (stdout) process.stdout.write(stdout)
     if (stderr) process.stderr.write(stderr)
     return
   }
 
-  mkdirSync(path.dirname(log.filePath), { recursive: true })
-  appendFileSync(log.filePath, stdout)
-  appendFileSync(log.filePath, stderr)
+  if ('filePath' in output) {
+    mkdirSync(path.dirname(output.filePath), { recursive: true })
+    appendFileSync(output.filePath, stdout)
+    appendFileSync(output.filePath, stderr)
+    return
+  }
+
+  if (stdout) output.write(stdout)
+  if (stderr) output.write(stderr)
 }
 
 export function commandError(message: string, command: string, error: unknown) {

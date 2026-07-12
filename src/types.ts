@@ -1,5 +1,6 @@
 import * as os from 'node:os'
 import * as path from 'node:path'
+import type { Writable } from 'node:stream'
 
 /**
  * Default directory used to cache managed Postgres binary packages.
@@ -33,7 +34,7 @@ export interface LocalPostgresSuperuser {
  * bounded in-memory tail quiet during successful startup and adds it to a
  * `LocalPostgresError` when startup fails.
  */
-export type LocalPostgresLogTarget =
+export type PostgresOutputTarget =
   | 'ignore'
   | 'inherit'
   | 'on-error'
@@ -41,6 +42,7 @@ export type LocalPostgresLogTarget =
       /** File path that receives appended Postgres stdout and stderr output. */
       filePath: string
     }
+  | Writable
 
 /**
  * Strategy for resolving local or managed Postgres binaries.
@@ -161,8 +163,8 @@ export interface InitPostgresDataDirOptions {
   noSync?: boolean
   /** Settings appended to `postgresql.conf` after a new cluster is initialized. */
   config?: Record<string, PostgresConfigValue>
-  /** Destination for `initdb` output. */
-  log?: LocalPostgresLogTarget
+  /** Destination for raw `initdb` stdout and stderr. */
+  initdbOutput?: PostgresOutputTarget
   /** Optional lifecycle logger. Missing methods are treated as no-ops. */
   logger?: Partial<LocalPostgresLogger>
 }
@@ -193,8 +195,8 @@ export interface StartPostgresDataDirOptions {
   postgres?: PostgresBinaryOptions
   /** Additional command-line arguments passed to the `postgres` process. */
   postgresOptions?: string[]
-  /** Destination for Postgres process stdout and stderr. */
-  log?: LocalPostgresLogTarget
+  /** Destination for raw `postgres` server stdout and stderr. */
+  postgresOutput?: PostgresOutputTarget
   /** Optional lifecycle logger. Missing methods are treated as no-ops. */
   logger?: Partial<LocalPostgresLogger>
   /** Maximum time to wait for Postgres to accept client connections. */
@@ -338,13 +340,13 @@ export interface StartPostgresOptions {
    */
   superuser?: LocalPostgresSuperuser
   /**
-   * Where Postgres stdout/stderr should go.
+   * Where raw stdout and stderr from the `postgres` server process should go.
    *
    * Defaults to `ignore`. Use `on-error` for quiet successful startup with
    * captured failure diagnostics. File targets create parent directories when
    * needed.
    */
-  log?: LocalPostgresLogTarget
+  postgresOutput?: PostgresOutputTarget
   /**
    * Postgres binary resolution behavior. Omit this for local-only PATH based
    * behavior. Provide it to enable version checks and managed downloads.

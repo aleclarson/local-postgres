@@ -3,8 +3,9 @@
 > Select a Postgres output target based on whether successful runs should stay
 > quiet and whether diagnostics must survive beyond startup.
 
-Postgres stdout and stderr are ignored by default. The `log` option controls
-the child process output separately from lifecycle messages sent to `logger`.
+Postgres stdout and stderr are ignored by default. The `postgresOutput` option
+controls raw server process output separately from lifecycle messages sent to
+`logger`.
 
 | Target              | Successful startup             | Startup failure                     | After readiness     |
 | ------------------- | ------------------------------ | ----------------------------------- | ------------------- |
@@ -12,6 +13,7 @@ the child process output separately from lifecycle messages sent to `logger`.
 | `on-error`          | Silent                         | Newest 64 KiB attached to the error | Discarded           |
 | `inherit`           | Written to the parent terminal | Already visible                     | Continues streaming |
 | `{ filePath }`      | Written to a file              | Retained in the file                | Continues writing   |
+| writable stream     | Written to the stream          | Already delivered                   | Continues streaming |
 
 ## Keep Successful Runs Quiet
 
@@ -24,7 +26,7 @@ import { LocalPostgresError, startPostgres } from 'local-postgres'
 try {
   await startPostgres({
     dataDir: '.postgres',
-    log: 'on-error',
+    postgresOutput: 'on-error',
   })
 } catch (error) {
   if (error instanceof LocalPostgresError) {
@@ -46,7 +48,7 @@ Use `inherit` when PostgreSQL should share the current process terminal:
 ```ts
 const postgres = await startPostgres({
   dataDir: '.postgres',
-  log: 'inherit',
+  postgresOutput: 'inherit',
 })
 ```
 
@@ -59,7 +61,7 @@ Use a file when output from the entire server lifetime must remain available:
 ```ts
 const postgres = await startPostgres({
   dataDir: '.postgres',
-  log: {
+  postgresOutput: {
     filePath: '.postgres/postgres.log',
   },
 })
@@ -69,6 +71,22 @@ const postgres = await startPostgres({
 for the server lifetime, unlike `on-error`, which is deliberately limited to
 startup diagnostics.
 
+## Write to a Stream
+
+Pass a Node.js writable stream to integrate raw PostgreSQL output with a
+process supervisor, structured logger adapter, dashboard, or prefixing stream:
+
+```ts
+const postgres = await startPostgres({
+  dataDir: '.postgres',
+  postgresOutput: process.stdout,
+})
+```
+
+Both stdout and stderr are piped to the target and may be interleaved. Stopping
+Postgres does not end or destroy the caller-owned stream. Stream errors remain
+the caller's responsibility.
+
 ## Receive Lifecycle Messages
 
 `logger` is a separate optional interface for package-level progress, warnings,
@@ -77,7 +95,7 @@ and unexpected process exits:
 ```ts
 const postgres = await startPostgres({
   dataDir: '.postgres',
-  log: 'on-error',
+  postgresOutput: 'on-error',
   logger: console,
 })
 ```

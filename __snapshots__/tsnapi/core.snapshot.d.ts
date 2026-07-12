@@ -19,7 +19,7 @@ export interface InitPostgresDataDirOptions {
   auth?: string;
   noSync?: boolean;
   config?: Record<string, PostgresConfigValue>;
-  log?: LocalPostgresLogTarget;
+  initdbOutput?: PostgresOutputTarget;
   logger?: Partial<LocalPostgresLogger>;
 }
 export interface InitPostgresDataDirResult {
@@ -58,7 +58,7 @@ export interface StartPostgresDataDirOptions {
   listen?: PostgresListenOptions;
   postgres?: PostgresBinaryOptions;
   postgresOptions?: string[];
-  log?: LocalPostgresLogTarget;
+  postgresOutput?: PostgresOutputTarget;
   logger?: Partial<LocalPostgresLogger>;
   readinessTimeoutMs?: number;
   readinessIntervalMs?: number;
@@ -89,9 +89,6 @@ export interface WaitForPostgresReadyOptions {
 // #endregion
 
 // #region Types
-export type LocalPostgresLogTarget = 'ignore' | 'inherit' | 'on-error' | {
-  filePath: string;
-};
 export type PostgresBinaryStrategy = 'local-only' | 'prefer-local' | 'prefer-download' | 'download-only';
 export type PostgresConfigValue = string | number | boolean;
 export type PostgresListenOptions = {
@@ -103,6 +100,9 @@ export type PostgresListenOptions = {
   socketDir: string;
   port?: number;
 };
+export type PostgresOutputTarget = 'ignore' | 'inherit' | 'on-error' | {
+  filePath: string;
+} | Writable;
 export type ResolvedPostgresListenOptions = {
   type: 'tcp';
   host: string;

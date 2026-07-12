@@ -47,7 +47,7 @@ const postgres = await startPostgresDataDir({
     type: 'socket',
     socketDir: '.postgres/socket',
   },
-  log: 'on-error',
+  postgresOutput: 'on-error',
 })
 
 try {
@@ -82,7 +82,7 @@ await initPostgresDataDir({ dataDir: '.postgres/18', binaries })
 const postgres = await startPostgresDataDir({
   dataDir: '.postgres/18',
   binaries,
-  log: 'on-error',
+  postgresOutput: 'on-error',
 })
 ```
 

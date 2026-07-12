@@ -13,7 +13,7 @@ import { startPostgres } from 'local-postgres'
 const postgres = await startPostgres({
   dataDir: '.postgres',
   database: 'app_dev',
-  log: 'on-error',
+  postgresOutput: 'on-error',
 })
 
 try {

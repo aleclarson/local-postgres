@@ -59,7 +59,7 @@ export async function startPostgres(options: StartPostgresOptions): Promise<Loca
     binaries,
     dataDir,
     listen,
-    log: options.log,
+    postgresOutput: options.postgresOutput,
     logger: options.logger,
     postgres: options.postgres,
     readinessIntervalMs: options.readinessIntervalMs,

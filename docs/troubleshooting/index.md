@@ -13,14 +13,14 @@ try {
   postgres = await startPostgres({
     dataDir: '.postgres',
     database: 'app_dev',
-    log: 'on-error',
+    postgresOutput: 'on-error',
   })
 } finally {
   await postgres?.stop()
 }
 ```
 
-`log: 'on-error'` keeps successful startup quiet and attaches a bounded tail of
+`postgresOutput: 'on-error'` keeps successful startup quiet and attaches a bounded tail of
 Postgres output to startup errors.
 
 | Symptom                                                 | Diagnose                                |
