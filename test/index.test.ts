@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readlink, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { PassThrough, Writable } from 'node:stream'
 
 type ExecFileResult = {
@@ -98,6 +98,7 @@ async function loadSubject({
   platform = 'darwin',
   arch = 'arm64',
   listenError,
+  packageFiles = {},
 }: {
   execFile?: ExecFileHandler
   fetch?: (url: string) => Response | Promise<Response>
@@ -107,6 +108,7 @@ async function loadSubject({
   platform?: NodeJS.Platform
   arch?: string
   listenError?: Error
+  packageFiles?: Record<string, string>
 } = {}) {
   vi.resetModules()
 
@@ -138,6 +140,11 @@ async function loadSubject({
           await mkdir(binDir, { recursive: true })
           await writeFile(join(binDir, 'initdb'), '')
           await writeFile(join(binDir, 'postgres'), '')
+          for (const [filePath, contents] of Object.entries(packageFiles)) {
+            const extractedPath = join(directoryPath, filePath)
+            await mkdir(dirname(extractedPath), { recursive: true })
+            await writeFile(extractedPath, contents)
+          }
         })().then(
           () => callback(),
           (error: Error) => callback(error),
@@ -482,6 +489,19 @@ test('downloads embedded postgres when local binaries are the wrong version', as
       throw new Error(`Unexpected fetch: ${url}`)
     },
     homeDir: root,
+    packageFiles: {
+      'native/lib/libicudata.77.1.dylib': 'ICU data',
+      'native/pg-symlinks.json': JSON.stringify([
+        {
+          source: 'native/lib/libicudata.77.1.dylib',
+          target: 'native/lib/libicudata.77.dylib',
+        },
+        {
+          source: 'native/lib/libicudata.77.1.dylib',
+          target: 'native/lib/libicudata.dylib',
+        },
+      ]),
+    },
   })
 
   expect(DEFAULT_POSTGRES_CACHE_DIR).toBe(join(root, '.local-postgres'))
@@ -508,9 +528,38 @@ test('downloads embedded postgres when local binaries are the wrong version', as
   expect(arrayBufferMock).not.toHaveBeenCalled()
   expect(unpackTarMock).toHaveBeenCalledWith(expect.any(String), { strip: 1 })
   expect(existsSync(join(packageDir, '.local-postgres-installed'))).toBe(true)
+  await expect(readlink(join(packageDir, 'native', 'lib', 'libicudata.77.dylib'))).resolves.toBe(
+    'libicudata.77.1.dylib',
+  )
+  await expect(readlink(join(packageDir, 'native', 'lib', 'libicudata.dylib'))).resolves.toBe(
+    'libicudata.77.1.dylib',
+  )
   expect(spawnMock.mock.calls[0]?.[0]).toBe(join(packageDir, 'native', 'bin', 'postgres'))
 
   await server.stop()
+
+  await rm(join(packageDir, 'native', 'lib', 'libicudata.77.dylib'))
+  const cachedServer = await startPostgres({
+    dataDir,
+    database: 'app',
+    port: 54_321,
+    postgres: {
+      cacheDir,
+      version: '18',
+    },
+    stopTimeoutMs: 1,
+  })
+
+  await expect(readlink(join(packageDir, 'native', 'lib', 'libicudata.77.dylib'))).resolves.toBe(
+    'libicudata.77.1.dylib',
+  )
+  expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+    'https://registry.npmjs.org/@embedded-postgres%2fdarwin-arm64',
+    'https://registry.npmjs.org/fake.tgz',
+    'https://registry.npmjs.org/@embedded-postgres%2fdarwin-arm64',
+  ])
+
+  await cachedServer.stop()
 })
 
 test('rejects managed downloads before extraction when integrity verification fails', async () => {
@@ -571,6 +620,70 @@ test('rejects managed downloads before extraction when integrity verification fa
   expect(unpackTarMock).not.toHaveBeenCalled()
   expect(spawnMock).not.toHaveBeenCalled()
 })
+
+test.each(['../../outside-cache.dylib', 'C:\\Windows\\outside-cache.dylib'])(
+  'rejects unsafe path %s in managed package symlink manifests',
+  async (unsafeTarget) => {
+    const root = await tempPath()
+    const dataDir = join(root, 'data')
+    const cacheDir = join(root, 'cache')
+    const tarball = Buffer.from('fake embedded postgres package')
+    const integrity = `sha512-${createHash('sha512').update(tarball).digest('base64')}`
+    await mkdir(dataDir, { recursive: true })
+    await writeFile(join(dataDir, 'PG_VERSION'), '18')
+
+    const { startPostgres } = await loadSubject({
+      execFile: (command, args) => {
+        if (command === 'postgres' && args[0] === '--version') {
+          return { stdout: 'postgres (PostgreSQL) 15.0' }
+        }
+        return defaultExecFile(command, args)
+      },
+      fetch: async (url) => {
+        if (url === 'https://registry.npmjs.org/@embedded-postgres%2fdarwin-arm64') {
+          return Response.json({
+            'dist-tags': { latest: '18.4.0-beta.17' },
+            versions: {
+              '18.4.0-beta.17': {
+                dist: {
+                  integrity,
+                  tarball: 'https://registry.npmjs.org/fake.tgz',
+                },
+              },
+            },
+          })
+        }
+
+        if (url === 'https://registry.npmjs.org/fake.tgz') {
+          return new Response(tarball)
+        }
+
+        throw new Error(`Unexpected fetch: ${url}`)
+      },
+      packageFiles: {
+        'native/lib/libicudata.77.1.dylib': 'ICU data',
+        'native/pg-symlinks.json': JSON.stringify([
+          {
+            source: 'native/lib/libicudata.77.1.dylib',
+            target: unsafeTarget,
+          },
+        ]),
+      },
+    })
+
+    await expect(
+      startPostgres({
+        dataDir,
+        database: 'app',
+        port: 54_321,
+        postgres: { cacheDir, version: '18' },
+        stopTimeoutMs: 1,
+      }),
+    ).rejects.toThrow('Unsafe symlink path')
+
+    expect(existsSync(join(root, 'outside-cache.dylib'))).toBe(false)
+  },
+)
 
 test('core resolves the postgres binary version before a data directory exists', async () => {
   const { execFileMock, getPostgresVersion } = await loadSubject()

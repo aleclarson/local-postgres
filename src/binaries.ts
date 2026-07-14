@@ -1,6 +1,17 @@
 import { createHash } from 'node:crypto'
 import { createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs'
-import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { Readable, Transform } from 'node:stream'
@@ -221,6 +232,7 @@ async function resolveDownloadedPostgresBinaries(
   const binaries = downloadedBinaryPaths(packageDir, packageVersion)
 
   if (existsSync(markerPath) && existsSync(binaries.postgres) && existsSync(binaries.initdb)) {
+    await hydratePackageSymlinks(packageDir, `${packageName}@${packageVersion}`)
     return binaries
   }
 
@@ -359,6 +371,7 @@ async function installEmbeddedPostgresPackage({
 
     await pipeline(createReadStream(tarballPath), createGunzip(), unpackTar(tempDir, { strip: 1 }))
     await rm(tarballPath, { force: true })
+    await hydratePackageSymlinks(tempDir, `${packageName}@${packageVersion}`)
     await writeFile(
       path.join(tempDir, '.local-postgres-installed'),
       JSON.stringify(
@@ -380,6 +393,97 @@ async function installEmbeddedPostgresPackage({
     ])
     throw error
   }
+}
+
+async function hydratePackageSymlinks(packageDir: string, label: string) {
+  const manifestPath = path.join(packageDir, 'native', 'pg-symlinks.json')
+  let manifest: unknown
+
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return
+    }
+    throw new LocalPostgresError(`Invalid symlink manifest in ${label}.`, { cause: error })
+  }
+
+  if (!Array.isArray(manifest)) {
+    throw new LocalPostgresError(`Invalid symlink manifest in ${label}.`)
+  }
+
+  const packageRealPath = await realpath(packageDir)
+  for (const entry of manifest) {
+    if (
+      typeof entry !== 'object' ||
+      entry === null ||
+      !('source' in entry) ||
+      !('target' in entry) ||
+      typeof entry.source !== 'string' ||
+      typeof entry.target !== 'string'
+    ) {
+      throw new LocalPostgresError(`Invalid symlink entry in ${label}.`)
+    }
+
+    const sourcePath = resolvePackageManifestPath(packageDir, entry.source, label)
+    const targetPath = resolvePackageManifestPath(packageDir, entry.target, label)
+    // Lexical checks reject traversal in the manifest. Real paths also prevent
+    // an extracted symlink from redirecting hydration outside the package.
+    const [sourceRealPath, targetParentRealPath] = await Promise.all([
+      realpath(sourcePath),
+      realpath(path.dirname(targetPath)),
+    ])
+
+    if (
+      !isPathWithin(packageRealPath, sourceRealPath) ||
+      !isPathWithin(packageRealPath, targetParentRealPath)
+    ) {
+      throw new LocalPostgresError(`Unsafe symlink entry in ${label}.`)
+    }
+
+    const relativeSource = path.relative(path.dirname(targetPath), sourcePath)
+    try {
+      await symlink(relativeSource, targetPath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error
+      }
+
+      const targetStat = await lstat(targetPath)
+      if (!targetStat.isSymbolicLink() || (await readlink(targetPath)) !== relativeSource) {
+        throw new LocalPostgresError(`Conflicting symlink target in ${label}: ${entry.target}`)
+      }
+    }
+  }
+}
+
+function resolvePackageManifestPath(packageDir: string, manifestPath: string, label: string) {
+  const portablePath = manifestPath.replaceAll('\\', '/')
+  const normalizedPath = path.posix.normalize(portablePath)
+  // Check both path dialects so a path authored for another platform cannot
+  // become absolute when the same package metadata is consumed elsewhere.
+  if (
+    manifestPath.length === 0 ||
+    normalizedPath === '.' ||
+    path.posix.isAbsolute(portablePath) ||
+    path.win32.isAbsolute(manifestPath) ||
+    normalizedPath === '..' ||
+    normalizedPath.startsWith('../')
+  ) {
+    throw new LocalPostgresError(`Unsafe symlink path in ${label}: ${manifestPath}`)
+  }
+
+  return path.join(packageDir, ...normalizedPath.split('/'))
+}
+
+function isPathWithin(parentPath: string, childPath: string) {
+  const relativePath = path.relative(parentPath, childPath)
+  return (
+    relativePath === '' ||
+    (!path.isAbsolute(relativePath) &&
+      !relativePath.startsWith(`..${path.sep}`) &&
+      relativePath !== '..')
+  )
 }
 
 function createNpmIntegrityVerifier(integrity: string, label: string) {
